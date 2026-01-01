@@ -1,0 +1,112 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+pip-wheel-metadata/
+share/python-wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# Virtual environments
+venv/
+env/
+ENV/
+env.bak/
+venv.bak/
+
+# PyCharm
+.idea/
+
+# VS Code
+.vscode/
+
+# Jupyter Notebook
+.ipynb_checkpoints
+
+# Data files (optional - comment out if you want to track data)
+*.csv
+*.tsv
+*.txt
+!requirements.txt  # Exception: Always track requirements.txt
+*.json
+*.xml
+data/
+datasets/
+
+# Model files (usually too large for git)
+*.pkl
+*.h5
+*.hdf5
+*.pt
+*.pth
+*.ckpt
+models/
+checkpoints/
+
+# NLTK data
+nltk_data/
+
+# spaCy models
+en_core_web_*/
+
+# Logs
+logs/
+*.log
+
+# Results and outputs
+results/
+outputs/
+*.png
+*.jpg
+*.jpeg
+*.pdf
+
+# OS files
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+*~
+
+# Streamlit
+.streamlit/
+
+# PyTest
+.pytest_cache/
+.coverage
+htmlcov/
+
+# mypy
+.mypy_cache/
+.dmypy.json
+dmypy.json
+
+# Environment variables
+.env
+.env.local
+
+# Database
+*.db
+*.sqlite
+*.sqlite3
+
+# Temporary files
+tmp/
+temp/
+*.tmp

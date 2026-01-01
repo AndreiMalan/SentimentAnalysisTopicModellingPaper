@@ -1,0 +1,119 @@
+# Core Data Science Libraries
+pandas>=2.0.0
+numpy>=1.24.0
+scipy>=1.10.0
+
+# Machine Learning
+scikit-learn>=1.3.0
+
+# Natural Language Processing
+nltk>=3.8.1
+spacy>=3.7.0
+textblob>=0.17.1
+
+# Deep Learning & Transformers (Optional but recommended)
+# Uncomment if you want to use BERT/RoBERTa models
+# torch>=2.0.0
+# transformers>=4.35.0
+# sentence-transformers>=2.2.0
+
+# Gradient Boosting Libraries (Recommended additions)
+# Uncomment to use advanced gradient boosting models
+# xgboost>=2.0.0
+# lightgbm>=4.0.0
+# catboost>=1.2.0
+
+# Topic Modeling (Advanced)
+# Uncomment to use BERTopic
+# bertopic>=0.15.0
+# umap-learn>=0.5.4
+# hdbscan>=0.8.33
+
+# Visualization
+matplotlib>=3.7.0
+seaborn>=0.12.0
+
+# Web Application
+streamlit>=1.28.0
+
+# Utilities
+contractions>=0.1.73
+emoji>=2.8.0
+
+# Progress bars
+tqdm>=4.66.0
+
+# Model persistence
+joblib>=1.3.0
+
+# Testing (Optional)
+# pytest>=7.4.0
+# pytest-cov>=4.1.0
+
+# Documentation (Optional)
+# sphinx>=7.2.0
+# sphinx-rtd-theme>=1.3.0
+
+# ==============================================================================
+# Installation Notes:
+# ==============================================================================
+#
+# 1. Basic Installation (Minimum requirements):
+#    pip install -r requirements.txt
+#
+# 2. After installing requirements, download NLTK data:
+#    python -c "import nltk; nltk.download('stopwords'); nltk.download('punkt'); nltk.download('wordnet'); nltk.download('vader_lexicon')"
+#
+# 3. Download spaCy English model:
+#    python -m spacy download en_core_web_sm
+#
+# 4. For advanced gradient boosting models:
+#    Uncomment the respective lines and run: pip install -r requirements.txt
+#
+# 5. For BERT/Transformer models (requires GPU for good performance):
+#    Uncomment torch, transformers, sentence-transformers
+#    Note: This will significantly increase installation size (~2GB+)
+#
+# 6. For BERTopic (advanced topic modeling):
+#    Uncomment bertopic, umap-learn, hdbscan
+#
+# ==============================================================================
+# Compatibility Notes:
+# ==============================================================================
+#
+# - Python 3.8+ required
+# - For GPU support with PyTorch, install appropriate CUDA version:
+#   pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu118
+#
+# - For Apple Silicon (M1/M2), some packages may require specific versions
+# - Windows users may need Microsoft C++ Build Tools for some packages
+#
+# ==============================================================================
+# Package Descriptions:
+# ==============================================================================
+#
+# pandas: Data manipulation and analysis
+# numpy: Numerical computing
+# scipy: Scientific computing (used for entropy calculations)
+# scikit-learn: Machine learning algorithms and utilities
+# nltk: Natural Language Toolkit for text processing
+# spacy: Industrial-strength NLP library
+# textblob: Simple NLP library for sentiment analysis
+# matplotlib: Plotting and visualization
+# seaborn: Statistical data visualization
+# streamlit: Web application framework
+# contractions: Expand contractions (don't -> do not)
+# emoji: Handle emoji characters
+# tqdm: Progress bars
+# joblib: Model serialization
+#
+# Optional Advanced Packages:
+# xgboost: Extreme Gradient Boosting (highly recommended)
+# lightgbm: Light Gradient Boosting Machine (for large datasets)
+# catboost: Categorical Boosting (handles categorical features well)
+# torch: PyTorch deep learning framework
+# transformers: Hugging Face transformers (BERT, RoBERTa, etc.)
+# sentence-transformers: Sentence embeddings
+# bertopic: Advanced topic modeling with transformers
+#
+# ==============================================================================
