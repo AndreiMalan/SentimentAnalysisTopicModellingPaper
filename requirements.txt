@@ -11,11 +11,11 @@ nltk>=3.8.1
 spacy>=3.7.0
 textblob>=0.17.1
 
-# Deep Learning & Transformers (Optional but recommended)
-# Uncomment if you want to use BERT/RoBERTa models
-# torch>=2.0.0
-# transformers>=4.35.0
-# sentence-transformers>=2.2.0
+# Deep Learning & Transformers (REQUIRED for enhanced version)
+# Now included by default for BERT-based sentiment analysis
+torch>=2.0.0
+transformers>=4.35.0
+sentence-transformers>=2.2.0
 
 # Gradient Boosting Libraries (Recommended additions)
 # Uncomment to use advanced gradient boosting models
@@ -23,11 +23,11 @@ textblob>=0.17.1
 # lightgbm>=4.0.0
 # catboost>=1.2.0
 
-# Topic Modeling (Advanced)
-# Uncomment to use BERTopic
-# bertopic>=0.15.0
-# umap-learn>=0.5.4
-# hdbscan>=0.8.33
+# Topic Modeling (Advanced) - REQUIRED for enhanced version
+# Now included by default for BERTopic semantic topic modeling
+bertopic>=0.15.0
+umap-learn>=0.5.4
+hdbscan>=0.8.33
 
 # Visualization
 matplotlib>=3.7.0

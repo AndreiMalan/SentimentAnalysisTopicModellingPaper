@@ -1,14 +1,15 @@
 """
-Sentiment Analysis and Topic Modeling Application
-==================================================
+Sentiment Analysis and Topic Modeling Application - Enhanced with BERT & BERTopic
+==================================================================================
 
-This application provides comprehensive text analysis capabilities including:
-1. Sentiment Analysis using multiple ML algorithms
+This application provides state-of-the-art text analysis capabilities including:
+1. Sentiment Analysis using traditional ML + BERT transformers
 2. Topic Modeling using LDA, NMF, and BERTopic
 3. Interactive Streamlit interface for real-time predictions
 
 Author: AI Research Team
 Date: 2026-01-01
+Version: 2.0 (Enhanced with Transformers)
 """
 
 import pandas as pd
@@ -35,6 +36,23 @@ import spacy
 import warnings
 warnings.filterwarnings('ignore')
 
+# Try to import transformers and BERTopic (optional dependencies)
+try:
+    from transformers import pipeline, AutoTokenizer, AutoModelForSequenceClassification
+    import torch
+    TRANSFORMERS_AVAILABLE = True
+except ImportError:
+    TRANSFORMERS_AVAILABLE = False
+    st.warning("⚠️ Transformers not installed. BERT models will not be available. Install with: pip install transformers torch")
+
+try:
+    from bertopic import BERTopic
+    from sentence_transformers import SentenceTransformer
+    BERTOPIC_AVAILABLE = True
+except ImportError:
+    BERTOPIC_AVAILABLE = False
+    st.warning("⚠️ BERTopic not installed. Advanced topic modeling not available. Install with: pip install bertopic sentence-transformers")
+
 # ============================================================================
 # CONFIGURATION AND CONSTANTS
 # ============================================================================
@@ -54,6 +72,10 @@ RANDOM_STATE = 42
 TEST_SIZE = 0.2
 MAX_FEATURES = 1000
 SAMPLE_FRACTION = 0.1  # Use 10% of data for faster processing
+
+# BERT configuration
+BERT_MODEL_NAME = "distilbert-base-uncased-finetuned-sst-2-english"  # Fast pre-trained model
+BERT_BATCH_SIZE = 16
 
 # ============================================================================
 # DATA LOADING AND PREPROCESSING
@@ -216,12 +238,12 @@ def create_feature_vectors(X_train, X_test, vectorizer_type='tfidf', max_feature
 
 
 # ============================================================================
-# MACHINE LEARNING MODELS FOR SENTIMENT ANALYSIS
+# TRADITIONAL MACHINE LEARNING MODELS FOR SENTIMENT ANALYSIS
 # ============================================================================
 
 def get_sentiment_models():
     """
-    Get dictionary of sentiment analysis models.
+    Get dictionary of traditional sentiment analysis models.
 
     **Models Included:**
 
@@ -248,16 +270,9 @@ def get_sentiment_models():
 
     5. **Gradient Boosting**
        - Functionality: Sequential ensemble learning
-       - Evaluation: ✓ Often achieves highest accuracy
+       - Evaluation: ✓ Often achieves highest accuracy among traditional methods
        - ⚠ Warning: Slower training, prone to overfitting
        - Best for: Competitions, maximum accuracy needed
-
-    **Recommended Additions for Future:**
-    - XGBoost: Faster gradient boosting with regularization
-    - LightGBM: Very fast gradient boosting for large datasets
-    - CatBoost: Handles categorical features well
-    - BERT/RoBERTa: State-of-the-art transformer models
-    - LSTM/GRU: Deep learning for sequential patterns
 
     Returns:
         dict: Dictionary of model names and instances
@@ -266,20 +281,20 @@ def get_sentiment_models():
         'Logistic Regression': LogisticRegression(
             max_iter=200,
             random_state=RANDOM_STATE,
-            class_weight='balanced'  # Handle imbalanced classes
+            class_weight='balanced'
         ),
         'Random Forest': RandomForestClassifier(
             n_estimators=100,
             n_jobs=-1,
             random_state=RANDOM_STATE,
-            max_depth=20  # Prevent overfitting
+            max_depth=20
         ),
         'Naive Bayes': MultinomialNB(
-            alpha=1.0  # Laplace smoothing
+            alpha=1.0
         ),
         'SVM': SVC(
-            kernel='linear',  # Linear kernel works best for text
-            probability=True,  # Enable probability estimates
+            kernel='linear',
+            probability=True,
             random_state=RANDOM_STATE,
             class_weight='balanced'
         ),
@@ -293,6 +308,169 @@ def get_sentiment_models():
 
     return models
 
+
+# ============================================================================
+# BERT-BASED SENTIMENT ANALYSIS (STATE-OF-THE-ART)
+# ============================================================================
+
+@st.cache_resource
+def load_bert_sentiment_model():
+    """
+    Load pre-trained BERT model for sentiment analysis.
+
+    **Model: DistilBERT**
+    - Functionality: Distilled version of BERT (40% smaller, 60% faster)
+    - Pre-trained on: Stanford Sentiment Treebank (SST-2)
+    - Output: Binary sentiment (positive/negative) with confidence scores
+
+    **Evaluation:**
+    ✓ Excellent: State-of-the-art accuracy (>90% on SST-2)
+    ✓ Good: Faster than full BERT while maintaining performance
+    ✓ Good: Pre-trained, no fine-tuning needed for basic sentiment
+    ⚠ Limitation: Binary sentiment (can be adapted for multi-class)
+
+    **How well is it used:**
+    ✓ Perfect for: General sentiment analysis with high accuracy
+    ✓ Production-ready: Optimized for speed and memory
+    ⚠ Consider: Fine-tuning on your specific domain for better results
+
+    **Alternative Models:**
+    - 'nlptown/bert-base-multilingual-uncased-sentiment' (5-class sentiment)
+    - 'cardiffnlp/twitter-roberta-base-sentiment' (Twitter-specific)
+    - 'distilbert-base-uncased' (for fine-tuning on custom data)
+
+    Returns:
+        pipeline: Hugging Face sentiment analysis pipeline
+    """
+    if not TRANSFORMERS_AVAILABLE:
+        return None
+
+    try:
+        # Use GPU if available
+        device = 0 if torch.cuda.is_available() else -1
+
+        # Load pre-trained model
+        sentiment_pipeline = pipeline(
+            "sentiment-analysis",
+            model=BERT_MODEL_NAME,
+            device=device,
+            truncation=True,
+            max_length=512
+        )
+
+        return sentiment_pipeline
+    except Exception as e:
+        st.error(f"Error loading BERT model: {str(e)}")
+        return None
+
+
+@st.cache_resource
+def load_multiclass_bert_model():
+    """
+    Load BERT model for multi-class emotion classification.
+
+    **Model: DistilBERT fine-tuned on emotions**
+    - Functionality: Classifies text into 6 emotions (joy, sadness, anger, fear, love, surprise)
+    - Architecture: DistilBERT + classification head
+    - Training: Fine-tuned on emotion datasets
+
+    **Evaluation:**
+    ✓ Excellent: Matches emotion classes in your dataset
+    ✓ Good: Context-aware emotion detection
+    ✓ Good: Handles nuanced emotional expressions
+
+    **How well is it used:**
+    ✓ Perfect for: Emotion classification tasks
+    ✓ Better than: Traditional ML for complex emotional context
+    ⚠ Slower than: Traditional ML (trade-off for accuracy)
+
+    Returns:
+        tuple: (model, tokenizer)
+    """
+    if not TRANSFORMERS_AVAILABLE:
+        return None, None
+
+    try:
+        model_name = "bhadresh-savani/distilbert-base-uncased-emotion"
+
+        # Load tokenizer and model
+        tokenizer = AutoTokenizer.from_pretrained(model_name)
+        model = AutoModelForSequenceClassification.from_pretrained(model_name)
+
+        # Move to GPU if available
+        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        model.to(device)
+        model.eval()
+
+        return model, tokenizer
+    except Exception as e:
+        st.error(f"Error loading multi-class BERT model: {str(e)}")
+        return None, None
+
+
+def predict_with_bert(texts, model, tokenizer, batch_size=16):
+    """
+    Predict emotions using BERT model.
+
+    **Functionality:**
+    - Tokenizes input texts
+    - Runs inference through BERT model
+    - Returns emotion predictions and probabilities
+
+    **Evaluation:**
+    ✓ Good: Batch processing for efficiency
+    ✓ Good: Handles variable-length inputs
+    ✓ Good: Returns both predictions and confidence scores
+
+    Args:
+        texts (list): List of text strings
+        model: BERT model
+        tokenizer: BERT tokenizer
+        batch_size (int): Batch size for inference
+
+    Returns:
+        tuple: (predictions, probabilities)
+    """
+    if model is None or tokenizer is None:
+        return None, None
+
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+    all_predictions = []
+    all_probabilities = []
+
+    # Process in batches
+    for i in range(0, len(texts), batch_size):
+        batch_texts = texts[i:i+batch_size]
+
+        # Tokenize
+        inputs = tokenizer(
+            batch_texts,
+            padding=True,
+            truncation=True,
+            max_length=512,
+            return_tensors="pt"
+        )
+
+        inputs = {k: v.to(device) for k, v in inputs.items()}
+
+        # Inference
+        with torch.no_grad():
+            outputs = model(**inputs)
+            logits = outputs.logits
+            probabilities = torch.nn.functional.softmax(logits, dim=-1)
+
+        predictions = torch.argmax(probabilities, dim=-1)
+
+        all_predictions.extend(predictions.cpu().numpy())
+        all_probabilities.extend(probabilities.cpu().numpy())
+
+    return np.array(all_predictions), np.array(all_probabilities)
+
+
+# ============================================================================
+# MODEL EVALUATION
+# ============================================================================
 
 def cross_validate_model(model, X_train_tfidf, y_train, cv=5, scoring='accuracy'):
     """
@@ -387,13 +565,69 @@ def evaluate_model_optimized(model, X_train_tfidf, X_test_tfidf, y_train, y_test
     return accuracy, precision, recall, f1, roc_auc
 
 
+def evaluate_bert_model(bert_model, tokenizer, X_test, y_test):
+    """
+    Evaluate BERT model on test data.
+
+    **Functionality:**
+    - Runs BERT inference on test set
+    - Calculates standard classification metrics
+    - Compares with traditional ML performance
+
+    **Evaluation:**
+    ✓ Good: Fair comparison with traditional models
+    ✓ Good: Provides comprehensive metrics
+
+    Args:
+        bert_model: BERT model
+        tokenizer: BERT tokenizer
+        X_test: Test texts
+        y_test: True labels
+
+    Returns:
+        dict: Evaluation metrics
+    """
+    if bert_model is None or tokenizer is None:
+        return None
+
+    # Convert to list
+    test_texts = X_test.tolist() if hasattr(X_test, 'tolist') else list(X_test)
+
+    # Predict
+    predictions, probabilities = predict_with_bert(test_texts, bert_model, tokenizer)
+
+    if predictions is None:
+        return None
+
+    # Calculate metrics
+    accuracy = accuracy_score(y_test, predictions)
+    precision = precision_score(y_test, predictions, average='weighted', zero_division=0)
+    recall = recall_score(y_test, predictions, average='weighted', zero_division=0)
+    f1 = f1_score(y_test, predictions, average='weighted', zero_division=0)
+
+    # ROC-AUC
+    y_test_bin = np.zeros((len(y_test), probabilities.shape[1]))
+    for i, label in enumerate(y_test):
+        y_test_bin[i, label] = 1
+
+    roc_auc = roc_auc_score(y_test_bin, probabilities, multi_class='ovr')
+
+    return {
+        'accuracy': accuracy,
+        'precision': precision,
+        'recall': recall,
+        'f1': f1,
+        'roc_auc': roc_auc
+    }
+
+
 # ============================================================================
-# TOPIC MODELING
+# TOPIC MODELING - TRADITIONAL METHODS
 # ============================================================================
 
 def perform_topic_modeling(texts, n_topics=5, method='lda', n_top_words=10):
     """
-    Perform topic modeling on text data.
+    Perform topic modeling on text data using traditional methods.
 
     **Methods Available:**
 
@@ -409,18 +643,11 @@ def perform_topic_modeling(texts, n_topics=5, method='lda', n_top_words=10):
        - Best for: Sparse, non-negative data (like text)
        - Advantages: Better for short texts
 
-    3. **BERTopic** (Future Addition)
-       - Functionality: Transformer-based topic modeling
-       - Evaluation: ✓ State-of-the-art, leverages BERT embeddings
-       - Best for: Semantic topic discovery
-       - Note: Requires sentence-transformers library
-
     **Evaluation:**
     ✓ Good: Supports multiple methods
     ✓ Good: Configurable number of topics
     ⚠ Consider: Adding coherence score calculation
     ⚠ Consider: Adding dynamic topic number selection
-    ⚠ Consider: Implementing BERTopic for better results
 
     Args:
         texts (list): List of text documents
@@ -456,7 +683,7 @@ def perform_topic_modeling(texts, n_topics=5, method='lda', n_top_words=10):
         model = NMF(
             n_components=n_topics,
             random_state=RANDOM_STATE,
-            init='nndsvda',  # Better initialization
+            init='nndsvda',
             max_iter=400
         )
         model.fit(doc_term_matrix)
@@ -475,9 +702,126 @@ def perform_topic_modeling(texts, n_topics=5, method='lda', n_top_words=10):
     return model, vectorizer, feature_names, topics_dict
 
 
+# ============================================================================
+# BERTOPIC - STATE-OF-THE-ART TOPIC MODELING
+# ============================================================================
+
+@st.cache_resource
+def load_bertopic_model(n_topics=5):
+    """
+    Load or create BERTopic model for semantic topic modeling.
+
+    **BERTopic Architecture:**
+    - Step 1: BERT embeddings (semantic representations)
+    - Step 2: UMAP dimensionality reduction
+    - Step 3: HDBSCAN clustering
+    - Step 4: c-TF-IDF for topic representation
+
+    **Evaluation:**
+    ✓ Excellent: State-of-the-art topic modeling
+    ✓ Excellent: Captures semantic meaning, not just word co-occurrence
+    ✓ Good: Dynamic topic modeling (topics evolve over time)
+    ✓ Good: Better topic coherence than LDA/NMF
+    ⚠ Requires: More computational resources
+    ⚠ Slower than: Traditional methods
+
+    **How well is it used:**
+    ✓ Perfect for: Discovering semantic topics in modern text
+    ✓ Better than LDA when: You have computational resources and need best quality
+    ✓ Production-ready: Can be saved and loaded for inference
+
+    **Advantages over LDA/NMF:**
+    1. Semantic understanding (not just word patterns)
+    2. Better handling of synonyms and context
+    3. More coherent and interpretable topics
+    4. Can discover topics of varying granularity
+
+    Args:
+        n_topics (int): Target number of topics (auto if None)
+
+    Returns:
+        BERTopic: Configured BERTopic model
+    """
+    if not BERTOPIC_AVAILABLE:
+        return None
+
+    try:
+        # Load sentence transformer for embeddings
+        embedding_model = SentenceTransformer('all-MiniLM-L6-v2')
+
+        # Create BERTopic model
+        topic_model = BERTopic(
+            language="english",
+            calculate_probabilities=True,
+            embedding_model=embedding_model,
+            min_topic_size=10,
+            n_gram_range=(1, 3),
+            nr_topics=n_topics if n_topics and n_topics > 0 else None,
+            verbose=False
+        )
+
+        return topic_model
+    except Exception as e:
+        st.error(f"Error loading BERTopic model: {str(e)}")
+        return None
+
+
+def perform_bertopic_modeling(texts, n_topics=5):
+    """
+    Perform BERTopic modeling on text data.
+
+    **Functionality:**
+    - Creates semantic embeddings using sentence transformers
+    - Clusters similar documents
+    - Extracts representative keywords for each cluster
+    - Returns topics with coherent semantic meaning
+
+    **Evaluation:**
+    ✓ Excellent: Superior topic quality compared to LDA/NMF
+    ✓ Good: Handles short and long texts equally well
+    ✓ Good: Automatically determines optimal number of topics if not specified
+
+    Args:
+        texts (list): List of text documents
+        n_topics (int): Target number of topics
+
+    Returns:
+        tuple: (bertopic_model, topics, probabilities, topic_info)
+    """
+    if not BERTOPIC_AVAILABLE:
+        return None, None, None, None
+
+    try:
+        # Load model
+        topic_model = load_bertopic_model(n_topics)
+
+        if topic_model is None:
+            return None, None, None, None
+
+        # Fit model
+        topics, probabilities = topic_model.fit_transform(texts)
+
+        # Get topic information
+        topic_info = topic_model.get_topic_info()
+
+        # Extract topics dictionary
+        topics_dict = {}
+        for topic_id in topic_info['Topic']:
+            if topic_id != -1:  # Skip outlier topic
+                topic_words = topic_model.get_topic(topic_id)
+                if topic_words:
+                    words = [word for word, _ in topic_words[:10]]
+                    topics_dict[f"Topic {topic_id}"] = words
+
+        return topic_model, topics, probabilities, topics_dict
+    except Exception as e:
+        st.error(f"Error in BERTopic modeling: {str(e)}")
+        return None, None, None, None
+
+
 def get_document_topics(model, vectorizer, texts, top_n=3):
     """
-    Get dominant topics for each document.
+    Get dominant topics for each document (for LDA/NMF).
 
     **Functionality:**
     - Transforms documents into topic space
@@ -590,7 +934,7 @@ def aspect_sentiment_analysis(text):
 # STREAMLIT UI
 # ============================================================================
 
-def display_results(model_name, accuracy, precision, recall, f1, roc_auc, cv_mean, cv_std):
+def display_results(model_name, accuracy, precision, recall, f1, roc_auc, cv_mean=None, cv_std=None):
     """
     Display model evaluation results in Streamlit.
 
@@ -604,24 +948,25 @@ def display_results(model_name, accuracy, precision, recall, f1, roc_auc, cv_mea
         cv_mean (float): Cross-validation mean score
         cv_std (float): Cross-validation standard deviation
     """
-    with st.expander(f"Rezultate pentru {model_name}"):
-        st.subheader(f"Rezultate pentru {model_name}")
-
-        col1, col2 = st.columns(2)
+    with st.expander(f"📊 Results for {model_name}"):
+        col1, col2, col3 = st.columns(3)
 
         with col1:
-            st.metric("Acuratețe (Accuracy)", f"{accuracy:.4f}")
-            st.metric("Precizie (Precision)", f"{precision:.4f}")
-            st.metric("Recall", f"{recall:.4f}")
+            st.metric("Accuracy", f"{accuracy:.4f}")
+            st.metric("Precision", f"{precision:.4f}")
 
         with col2:
+            st.metric("Recall", f"{recall:.4f}")
             st.metric("F1 Score", f"{f1:.4f}")
+
+        with col3:
             if roc_auc is not None:
                 st.metric("ROC-AUC", f"{roc_auc:.4f}")
             else:
                 st.metric("ROC-AUC", "N/A")
 
-        st.write(f"**Acuratețe medie (Cross-Validation Mean):** {cv_mean:.4f} ± {cv_std:.4f}")
+        if cv_mean is not None and cv_std is not None:
+            st.write(f"**Cross-Validation:** {cv_mean:.4f} ± {cv_std:.4f}")
 
 
 def main():
@@ -630,11 +975,17 @@ def main():
     """
     st.set_page_config(page_title="Sentiment Analysis & Topic Modeling", layout="wide")
 
-    st.title("🎭 Sentiment Analysis & Topic Modeling Application")
+    st.title("🎭 Advanced Sentiment Analysis & Topic Modeling")
+    st.markdown("**Enhanced with BERT & BERTopic** | State-of-the-Art NLP Models")
     st.markdown("---")
 
     # Sidebar configuration
     st.sidebar.header("⚙️ Configuration")
+
+    # Model type selection
+    st.sidebar.subheader("Analysis Type")
+    use_bert = st.sidebar.checkbox("🚀 Use BERT for Sentiment Analysis", value=TRANSFORMERS_AVAILABLE)
+    use_traditional = st.sidebar.checkbox("📊 Use Traditional ML Models", value=True)
 
     # File upload
     uploaded_file = st.sidebar.file_uploader("Upload CSV file", type=['csv'])
@@ -644,19 +995,30 @@ def main():
     else:
         file_path = "text.csv"  # Default file
 
-    # Model selection
-    st.sidebar.subheader("Select Models")
-    model_selection = st.sidebar.multiselect(
-        "Choose models to evaluate",
-        ['Logistic Regression', 'Random Forest', 'Naive Bayes', 'SVM', 'Gradient Boosting'],
-        default=['Logistic Regression', 'Naive Bayes']
-    )
+    # Model selection for traditional ML
+    if use_traditional:
+        st.sidebar.subheader("Traditional ML Models")
+        model_selection = st.sidebar.multiselect(
+            "Choose models to evaluate",
+            ['Logistic Regression', 'Random Forest', 'Naive Bayes', 'SVM', 'Gradient Boosting'],
+            default=['Logistic Regression', 'Naive Bayes']
+        )
+    else:
+        model_selection = []
 
     # Topic modeling settings
     st.sidebar.subheader("Topic Modeling Settings")
     enable_topic_modeling = st.sidebar.checkbox("Enable Topic Modeling", value=True)
-    topic_method = st.sidebar.selectbox("Method", ['lda', 'nmf'])
-    n_topics = st.sidebar.slider("Number of Topics", 3, 10, 5)
+
+    if enable_topic_modeling:
+        topic_method = st.sidebar.selectbox(
+            "Topic Modeling Method",
+            ['lda', 'nmf', 'bertopic'] if BERTOPIC_AVAILABLE else ['lda', 'nmf']
+        )
+        n_topics = st.sidebar.slider("Number of Topics", 3, 10, 5)
+    else:
+        topic_method = 'lda'
+        n_topics = 5
 
     # Load data
     try:
@@ -677,164 +1039,254 @@ def main():
         # Preprocess data
         with st.spinner("Preprocessing data..."):
             data['text'] = data['text'].fillna('').astype(str)
-            data['text'] = data['text'].apply(clean_text)
-            data['text'] = data['text'].apply(preprocess_text)
-
-        # Train-test split
-        X_train, X_test, y_train, y_test = train_test_split(
-            data['text'],
-            data['sentiment'],
-            test_size=TEST_SIZE,
-            random_state=RANDOM_STATE
-        )
-
-        # Vectorization
-        X_train_tfidf, X_test_tfidf, vectorizer_tfidf = create_feature_vectors(
-            X_train, X_test, vectorizer_type='tfidf', max_features=MAX_FEATURES
-        )
-
-        # Get all classes
-        all_classes = np.arange(len(np.unique(y_train)))
+            data['text_cleaned'] = data['text'].apply(clean_text)
+            data['text_processed'] = data['text_cleaned'].apply(preprocess_text)
 
         # Display dataset info
         st.header("📊 Dataset Information")
-        col1, col2, col3 = st.columns(3)
+        col1, col2, col3, col4 = st.columns(4)
         col1.metric("Total Samples", len(data))
-        col2.metric("Training Samples", len(X_train))
-        col3.metric("Test Samples", len(X_test))
+        col2.metric("Unique Sentiments", data['sentiment'].nunique())
+        col3.metric("Avg Text Length", f"{data['text'].str.len().mean():.0f}")
+        col4.metric("Processing", "Complete ✓")
 
         # Sentiment distribution
         st.subheader("Sentiment Distribution")
+        fig, ax = plt.subplots(figsize=(10, 4))
         sentiment_counts = data['sentiment'].value_counts()
-        fig, ax = plt.subplots(figsize=(10, 5))
         sentiment_counts.plot(kind='bar', ax=ax, color='skyblue')
-        ax.set_xlabel("Sentiment")
+        ax.set_xlabel("Sentiment Class")
         ax.set_ylabel("Count")
-        ax.set_title("Distribution of Sentiments")
+        ax.set_title("Distribution of Sentiment Classes")
         st.pyplot(fig)
 
-        # Model evaluation
-        st.markdown("---")
-        st.header("🤖 Model Evaluation")
+        # Train-test split
+        X_train, X_test, y_train, y_test = train_test_split(
+            data['text_processed'],
+            data['sentiment'],
+            test_size=TEST_SIZE,
+            random_state=RANDOM_STATE,
+            stratify=data['sentiment']
+        )
 
-        all_models = get_sentiment_models()
-        selected_models = {k: v for k, v in all_models.items() if k in model_selection}
+        col1, col2 = st.columns(2)
+        col1.metric("Training Samples", len(X_train))
+        col2.metric("Test Samples", len(X_test))
 
-        with st.spinner("Training and evaluating models..."):
-            for name, model in selected_models.items():
-                cv_mean, cv_std = cross_validate_model(
-                    model, X_train_tfidf, y_train, cv=5, scoring='accuracy'
-                )
-                results = evaluate_model_optimized(
-                    model, X_train_tfidf, X_test_tfidf, y_train, y_test, all_classes, calc_auc=True
-                )
-                display_results(
-                    model_name=name,
-                    accuracy=results[0],
-                    precision=results[1],
-                    recall=results[2],
-                    f1=results[3],
-                    roc_auc=results[4],
-                    cv_mean=cv_mean,
-                    cv_std=cv_std
-                )
+        # Traditional ML Models
+        if use_traditional and model_selection:
+            st.markdown("---")
+            st.header("🤖 Traditional Machine Learning Models")
+
+            # Vectorization
+            X_train_tfidf, X_test_tfidf, vectorizer_tfidf = create_feature_vectors(
+                X_train, X_test, vectorizer_type='tfidf', max_features=MAX_FEATURES
+            )
+
+            all_classes = np.arange(len(np.unique(y_train)))
+
+            all_models = get_sentiment_models()
+            selected_models = {k: v for k, v in all_models.items() if k in model_selection}
+
+            with st.spinner("Training and evaluating traditional ML models..."):
+                for name, model in selected_models.items():
+                    cv_mean, cv_std = cross_validate_model(
+                        model, X_train_tfidf, y_train, cv=5, scoring='accuracy'
+                    )
+                    results = evaluate_model_optimized(
+                        model, X_train_tfidf, X_test_tfidf, y_train, y_test, all_classes, calc_auc=True
+                    )
+                    display_results(
+                        model_name=name,
+                        accuracy=results[0],
+                        precision=results[1],
+                        recall=results[2],
+                        f1=results[3],
+                        roc_auc=results[4],
+                        cv_mean=cv_mean,
+                        cv_std=cv_std
+                    )
+
+        # BERT Model
+        if use_bert and TRANSFORMERS_AVAILABLE:
+            st.markdown("---")
+            st.header("🚀 BERT-Based Sentiment Analysis")
+
+            with st.spinner("Loading BERT model..."):
+                bert_model, bert_tokenizer = load_multiclass_bert_model()
+
+            if bert_model is not None:
+                with st.spinner("Evaluating BERT model..."):
+                    # Use original text for BERT (not processed)
+                    X_train_orig = data.loc[X_train.index, 'text']
+                    X_test_orig = data.loc[X_test.index, 'text']
+
+                    bert_results = evaluate_bert_model(bert_model, bert_tokenizer, X_test_orig, y_test)
+
+                    if bert_results:
+                        display_results(
+                            model_name="BERT (DistilBERT-Emotion)",
+                            accuracy=bert_results['accuracy'],
+                            precision=bert_results['precision'],
+                            recall=bert_results['recall'],
+                            f1=bert_results['f1'],
+                            roc_auc=bert_results['roc_auc']
+                        )
+
+                        st.success("✓ BERT model evaluation complete!")
+                    else:
+                        st.warning("BERT evaluation failed.")
+            else:
+                st.warning("BERT model could not be loaded.")
 
         # Topic Modeling
         if enable_topic_modeling:
             st.markdown("---")
             st.header("📚 Topic Modeling")
 
-            with st.spinner(f"Performing {topic_method.upper()} topic modeling..."):
-                topic_model, topic_vectorizer, feature_names, topics_dict = perform_topic_modeling(
-                    data['text'].tolist(),
-                    n_topics=n_topics,
-                    method=topic_method,
-                    n_top_words=10
-                )
+            if topic_method == 'bertopic' and BERTOPIC_AVAILABLE:
+                st.subheader("🎯 BERTopic - Semantic Topic Discovery")
 
-            st.subheader(f"Discovered Topics ({topic_method.upper()})")
-            for topic_name, words in topics_dict.items():
-                st.write(f"**{topic_name}:** {', '.join(words)}")
+                with st.spinner("Performing BERTopic analysis... (this may take a minute)"):
+                    # Use original text for BERTopic
+                    topic_model, topics, probs, topics_dict = perform_bertopic_modeling(
+                        data['text'].tolist(),
+                        n_topics=n_topics
+                    )
+
+                if topics_dict:
+                    st.success(f"✓ Discovered {len(topics_dict)} semantic topics!")
+
+                    for topic_name, words in topics_dict.items():
+                        with st.expander(f"**{topic_name}**"):
+                            st.write(f"**Keywords:** {', '.join(words)}")
+
+                    # Topic distribution
+                    if topics is not None:
+                        st.subheader("Topic Distribution")
+                        fig, ax = plt.subplots(figsize=(10, 4))
+                        topic_counts = pd.Series(topics).value_counts().sort_index()
+                        topic_counts = topic_counts[topic_counts.index != -1]  # Remove outliers
+                        topic_counts.plot(kind='bar', ax=ax, color='green')
+                        ax.set_xlabel("Topic ID")
+                        ax.set_ylabel("Document Count")
+                        ax.set_title("Documents per Topic (BERTopic)")
+                        st.pyplot(fig)
+
+            else:
+                # Traditional topic modeling
+                st.subheader(f"📖 {topic_method.upper()} Topic Modeling")
+
+                with st.spinner(f"Performing {topic_method.upper()} topic modeling..."):
+                    topic_model, topic_vectorizer, feature_names, topics_dict = perform_topic_modeling(
+                        data['text_processed'].tolist(),
+                        n_topics=n_topics,
+                        method=topic_method,
+                        n_top_words=10
+                    )
+
+                st.success(f"✓ Discovered {len(topics_dict)} topics!")
+
+                for topic_name, words in topics_dict.items():
+                    with st.expander(f"**{topic_name}**"):
+                        st.write(f"**Keywords:** {', '.join(words)}")
 
         # Interactive prediction
         st.markdown("---")
         st.header("🔮 Interactive Sentiment Prediction")
 
         user_input = st.text_area("Enter text for sentiment analysis:", value="", height=100)
-        analyze_button = st.button("Analyze Sentiment", type="primary")
+        analyze_button = st.button("🔍 Analyze Sentiment", type="primary")
 
         if user_input and analyze_button:
-            # Preprocess input
+            st.subheader("Analysis Results")
+
+            # Prepare input
             processed_input = preprocess_text(clean_text(user_input))
-            input_vectorized = vectorizer_tfidf.transform([processed_input])
 
-            # Select model for prediction
-            selected_model = selected_models[list(selected_models.keys())[0]]
-            selected_model.fit(X_train_tfidf, y_train)
+            # Traditional ML prediction
+            if use_traditional and model_selection:
+                st.write("### Traditional ML Prediction")
 
-            sentiment_pred = selected_model.predict(input_vectorized)[0]
-            sentiment_proba = selected_model.predict_proba(input_vectorized)[0]
+                input_vectorized = vectorizer_tfidf.transform([processed_input])
 
-            # Calculate additional metrics
-            sentiment_intensity = get_sentiment_intensity(user_input)
-            subjectivity = get_subjectivity(user_input)
-            aspect_sentiments = aspect_sentiment_analysis(user_input)
-            pred_entropy = entropy(sentiment_proba)
+                selected_model = selected_models[list(selected_models.keys())[0]]
+                sentiment_pred = selected_model.predict(input_vectorized)[0]
+                sentiment_proba = selected_model.predict_proba(input_vectorized)[0]
 
-            # Display results
-            sentiment_label = EMOTION_MAPPING[sentiment_pred]
-            sentiment_probabilities = {
-                EMOTION_MAPPING[i]: prob for i, prob in enumerate(sentiment_proba)
-            }
+                sentiment_label = EMOTION_MAPPING[sentiment_pred]
+                st.success(f"**Predicted Emotion (Traditional ML):** {sentiment_label.upper()}")
 
-            top3_probabilities = sorted(sentiment_probabilities.items(), key=lambda x: x[1], reverse=True)[:3]
+            # BERT prediction
+            if use_bert and TRANSFORMERS_AVAILABLE and bert_model is not None:
+                st.write("### BERT Prediction")
 
-            st.success(f"**Predicted Sentiment:** {sentiment_label.upper()}")
+                predictions, probabilities = predict_with_bert([user_input], bert_model, bert_tokenizer, batch_size=1)
 
+                if predictions is not None:
+                    bert_pred = predictions[0]
+                    bert_proba = probabilities[0]
+
+                    bert_label = EMOTION_MAPPING[bert_pred]
+                    st.success(f"**Predicted Emotion (BERT):** {bert_label.upper()}")
+
+                    sentiment_probabilities = {
+                        EMOTION_MAPPING[i]: prob for i, prob in enumerate(bert_proba)
+                    }
+
+                    top3_probabilities = sorted(sentiment_probabilities.items(), key=lambda x: x[1], reverse=True)[:3]
+
+                    # Display top 3 predictions
+                    st.write("#### Top 3 Predictions (BERT)")
+                    for i, (sentiment, prob) in enumerate(top3_probabilities):
+                        color = ['red', 'green', 'blue'][i]
+                        st.markdown(
+                            f"<div style='text-align:center;'>{sentiment.upper()}: "
+                            f"<span style='color:{color}; font-weight:bold;'>{prob * 100:.2f}%</span></div>",
+                            unsafe_allow_html=True
+                        )
+
+                    # Visualization
+                    sentiments, probabilities_vals = zip(*top3_probabilities)
+                    fig, ax = plt.subplots(figsize=(10, 5))
+                    ax.bar(sentiments, [p * 100 for p in probabilities_vals], color=['red', 'green', 'blue'])
+                    ax.set_title("Top 3 Predicted Emotions (BERT)")
+                    ax.set_xlabel("Emotion")
+                    ax.set_ylabel("Confidence (%)")
+                    st.pyplot(fig)
+
+            # Additional analysis
             col1, col2 = st.columns(2)
 
             with col1:
-                st.write("**Sentiment Intensity:**")
+                sentiment_intensity = get_sentiment_intensity(user_input)
+                st.write("**Sentiment Intensity (VADER):**")
                 st.progress(abs(sentiment_intensity))
                 st.write(f"Score: {sentiment_intensity:.4f}")
 
             with col2:
+                subjectivity = get_subjectivity(user_input)
                 st.write("**Subjectivity:**")
                 st.progress(subjectivity)
                 st.write(f"Score: {subjectivity:.4f}")
 
-            # Top 3 predictions
-            st.subheader("Top 3 Predictions")
-            sentiments, probabilities = zip(*top3_probabilities)
-
-            for i, (sentiment, prob) in enumerate(top3_probabilities):
-                color = ['red', 'green', 'blue'][i]
-                st.markdown(
-                    f"<div style='text-align:center;'>{sentiment}: "
-                    f"<span style='color:{color}; font-weight:bold;'>{prob * 100:.2f}%</span></div>",
-                    unsafe_allow_html=True
-                )
-
-            # Visualization
-            fig, ax = plt.subplots(figsize=(10, 5))
-            ax.bar(sentiments, [p * 100 for p in probabilities], color=['red', 'green', 'blue'])
-            ax.set_title("Top 3 Predicted Emotions and Their Probabilities")
-            ax.set_xlabel("Emotion")
-            ax.set_ylabel("Probability (%)")
-            st.pyplot(fig)
-
             # Aspect-based sentiment
             with st.expander("🔍 Aspect-Based Sentiment Analysis"):
-                for aspect, sentiment in aspect_sentiments.items():
-                    st.write(f"**{aspect}:** {sentiment:.2f}")
+                aspect_sentiments = aspect_sentiment_analysis(user_input)
+                if aspect_sentiments:
+                    for aspect, sentiment in aspect_sentiments.items():
+                        sentiment_emoji = "😊" if sentiment > 0 else "😞" if sentiment < 0 else "😐"
+                        st.write(f"{sentiment_emoji} **{aspect}:** {sentiment:.2f}")
+                else:
+                    st.write("No aspects detected.")
 
-            # Topic assignment (if enabled)
-            if enable_topic_modeling:
-                doc_topics = get_document_topics(
-                    topic_model, topic_vectorizer, [processed_input], top_n=3
-                )
-
+            # Topic assignment
+            if enable_topic_modeling and topic_method != 'bertopic':
                 with st.expander("📚 Dominant Topics"):
+                    doc_topics = get_document_topics(
+                        topic_model, topic_vectorizer, [processed_input], top_n=3
+                    )
+
                     for idx, (topic_idx, prob) in enumerate(doc_topics[0]):
                         st.write(f"**Topic {topic_idx + 1}:** {prob:.4f}")
                         st.write(f"Keywords: {', '.join(topics_dict[f'Topic {topic_idx + 1}'])}")
@@ -842,7 +1294,8 @@ def main():
     except Exception as e:
         st.error(f"An error occurred: {str(e)}")
         import traceback
-        st.code(traceback.format_exc())
+        with st.expander("Error Details"):
+            st.code(traceback.format_exc())
 
 
 if __name__ == "__main__":
