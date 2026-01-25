@@ -4,12 +4,14 @@ Sentiment Analysis and Topic Modeling Application - Enhanced with BERT & BERTopi
 
 This application provides state-of-the-art text analysis capabilities including:
 1. Sentiment Analysis using traditional ML + BERT transformers
-2. Topic Modeling using LDA, NMF, and BERTopic
-3. Interactive Streamlit interface for real-time predictions
+2. Topic Modeling using LDA, NMF, BERTopic, and Guided Topic Modeling
+3. Zero-Shot Classification for predefined social commerce behavior topics
+4. Topic-Sentiment Integration for comprehensive analysis
+5. Interactive Streamlit interface for real-time predictions
 
 Author: AI Research Team
 Date: 2026-01-01
-Version: 2.0 (Enhanced with Transformers)
+Version: 3.0 (Enhanced with Social Commerce Topic Modeling)
 """
 
 import pandas as pd
@@ -22,7 +24,7 @@ from sklearn.linear_model import LogisticRegression
 from sklearn.ensemble import RandomForestClassifier, GradientBoostingClassifier
 from sklearn.naive_bayes import MultinomialNB
 from sklearn.svm import SVC
-from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score, roc_auc_score
+from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score, roc_auc_score, classification_report
 from sklearn.decomposition import LatentDirichletAllocation, NMF
 from nltk.corpus import stopwords
 from nltk.tokenize import word_tokenize
@@ -30,6 +32,7 @@ from nltk.stem import WordNetLemmatizer
 from scipy.stats import entropy
 import streamlit as st
 import matplotlib.pyplot as plt
+import seaborn as sns
 from nltk.sentiment import SentimentIntensityAnalyzer
 from textblob import TextBlob
 import spacy
@@ -43,7 +46,6 @@ try:
     TRANSFORMERS_AVAILABLE = True
 except ImportError:
     TRANSFORMERS_AVAILABLE = False
-    st.warning("⚠️ Transformers not installed. BERT models will not be available. Install with: pip install transformers torch")
 
 try:
     from bertopic import BERTopic
@@ -51,7 +53,18 @@ try:
     BERTOPIC_AVAILABLE = True
 except ImportError:
     BERTOPIC_AVAILABLE = False
-    st.warning("⚠️ BERTopic not installed. Advanced topic modeling not available. Install with: pip install bertopic sentence-transformers")
+
+# Try to import CorEx for guided topic modeling
+try:
+    from corextopic import Corex as CorEx
+    COREX_AVAILABLE = True
+except ImportError:
+    try:
+        # Alternative import for corex_topic
+        from corex_topic import Corex as CorEx
+        COREX_AVAILABLE = True
+    except ImportError:
+        COREX_AVAILABLE = False
 
 # ============================================================================
 # CONFIGURATION AND CONSTANTS
@@ -78,6 +91,88 @@ BERT_MODEL_NAME = "distilbert-base-uncased-finetuned-sst-2-english"  # Fast pre-
 BERT_BATCH_SIZE = 16
 
 # ============================================================================
+# SOCIAL COMMERCE BEHAVIOR TOPICS - PREDEFINED CATEGORIES
+# ============================================================================
+
+# Define your 5 social commerce behavior topics with descriptions and seed words
+SOCIAL_COMMERCE_TOPICS = {
+    "Purchase Intent": {
+        "description": "Intention to buy products, shopping motivation, buying decisions",
+        "seed_words": [
+            "buy", "purchase", "order", "cart", "checkout", "shop", "want",
+            "need", "get", "afford", "price", "cost", "deal", "discount",
+            "sale", "buying", "shopping", "gonna buy", "will buy", "thinking of buying"
+        ],
+        "zero_shot_labels": [
+            "purchase intention",
+            "buying motivation",
+            "shopping decision",
+            "intent to purchase"
+        ]
+    },
+    "Trust & Credibility": {
+        "description": "Trust signals, authenticity concerns, seller reliability, scam awareness",
+        "seed_words": [
+            "trust", "reliable", "authentic", "genuine", "fake", "scam",
+            "legit", "legitimate", "safe", "secure", "verified", "real",
+            "honest", "trustworthy", "reputation", "credible", "fraud",
+            "suspicious", "quality", "original"
+        ],
+        "zero_shot_labels": [
+            "trust and credibility concerns",
+            "authenticity verification",
+            "seller reliability assessment"
+        ]
+    },
+    "Social Influence": {
+        "description": "Peer recommendations, influencer impact, social proof, word of mouth",
+        "seed_words": [
+            "recommend", "recommendation", "influencer", "friend", "everyone",
+            "popular", "trending", "viral", "review", "rating", "star",
+            "tried", "tested", "swear by", "love it", "amazing", "best",
+            "follower", "celebrity", "endorsed", "suggested"
+        ],
+        "zero_shot_labels": [
+            "social influence and recommendations",
+            "peer pressure to buy",
+            "influencer marketing impact"
+        ]
+    },
+    "Information Seeking": {
+        "description": "Product research, comparison shopping, asking questions, seeking details",
+        "seed_words": [
+            "anyone", "know", "question", "ask", "compare", "comparison",
+            "difference", "better", "which", "what", "how", "where",
+            "looking for", "searching", "find", "help", "advice", "opinion",
+            "experience", "feedback", "review", "details", "specs"
+        ],
+        "zero_shot_labels": [
+            "information seeking behavior",
+            "product research and comparison",
+            "asking for advice"
+        ]
+    },
+    "Engagement & Interaction": {
+        "description": "Social engagement, likes, shares, comments, community participation",
+        "seed_words": [
+            "like", "share", "comment", "follow", "subscribe", "post",
+            "tag", "mention", "dm", "message", "reply", "react",
+            "engage", "participate", "join", "community", "group",
+            "discuss", "chat", "connect"
+        ],
+        "zero_shot_labels": [
+            "social media engagement",
+            "community participation",
+            "interaction and communication"
+        ]
+    }
+}
+
+# Simplified labels for zero-shot classification
+SOCIAL_COMMERCE_LABELS = list(SOCIAL_COMMERCE_TOPICS.keys())
+
+
+# ============================================================================
 # DATA LOADING AND PREPROCESSING
 # ============================================================================
 
@@ -85,23 +180,6 @@ BERT_BATCH_SIZE = 16
 def load_and_preprocess_data(file_path):
     """
     Load and preprocess the dataset.
-
-    **Functionality:**
-    - Loads CSV data
-    - Drops ID column and duplicates
-    - Samples data for faster processing
-    - Renames columns for convenience
-
-    **Evaluation:**
-    ✓ Good: Using drop_duplicates() to ensure unique samples
-    ✓ Good: Sampling strategy for faster experimentation
-    ⚠ Consider: Making sample_fraction configurable via UI
-
-    Args:
-        file_path (str): Path to the CSV file
-
-    Returns:
-        pd.DataFrame: Preprocessed dataframe
     """
     try:
         data = pd.read_csv(file_path)
@@ -129,24 +207,6 @@ def load_and_preprocess_data(file_path):
 def clean_text(text):
     """
     Clean and normalize text data.
-
-    **Functionality:**
-    - Converts to lowercase
-    - Removes URLs
-    - Removes digits
-    - Removes punctuation
-
-    **Evaluation:**
-    ✓ Good: Comprehensive cleaning pipeline
-    ✓ Good: Handles non-string inputs
-    ⚠ Consider: Preserving emojis for sentiment analysis
-    ⚠ Consider: Handling contractions (don't -> do not)
-
-    Args:
-        text (str): Raw text to clean
-
-    Returns:
-        str: Cleaned text
     """
     if not isinstance(text, str):
         text = str(text)
@@ -169,23 +229,6 @@ def clean_text(text):
 def preprocess_text(text):
     """
     Advanced text preprocessing with tokenization and lemmatization.
-
-    **Functionality:**
-    - Tokenizes text into words
-    - Removes stopwords
-    - Lemmatizes words to their root form
-
-    **Evaluation:**
-    ✓ Good: Using lemmatization instead of stemming (preserves meaning better)
-    ✓ Good: Stopword removal reduces noise
-    ⚠ Consider: Making stopword list customizable (keep negation words like 'not')
-    ⚠ Consider: Using spaCy for lemmatization (faster and more accurate)
-
-    Args:
-        text (str): Cleaned text
-
-    Returns:
-        str: Preprocessed text
     """
     stop_words = set(stopwords.words('english'))
     lemmatizer = WordNetLemmatizer()
@@ -206,25 +249,6 @@ def preprocess_text(text):
 def create_feature_vectors(X_train, X_test, vectorizer_type='tfidf', max_features=1000):
     """
     Create feature vectors using TF-IDF or Count Vectorization.
-
-    **Functionality:**
-    - TF-IDF: Weighs terms by frequency and rarity (default)
-    - CountVectorizer: Simple word counts
-
-    **Evaluation:**
-    ✓ Good: TF-IDF is excellent for sentiment analysis
-    ✓ Good: Configurable vectorizer type
-    ⚠ Consider: Adding n-gram features (bigrams, trigrams) for better context
-    ⚠ Consider: Using Word2Vec, GloVe, or BERT embeddings for deep learning models
-
-    Args:
-        X_train: Training text data
-        X_test: Test text data
-        vectorizer_type (str): 'tfidf' or 'count'
-        max_features (int): Maximum number of features
-
-    Returns:
-        tuple: (X_train_vectorized, X_test_vectorized, vectorizer)
     """
     if vectorizer_type == 'tfidf':
         vectorizer = TfidfVectorizer(max_features=max_features, ngram_range=(1, 2))
@@ -244,38 +268,6 @@ def create_feature_vectors(X_train, X_test, vectorizer_type='tfidf', max_feature
 def get_sentiment_models():
     """
     Get dictionary of traditional sentiment analysis models.
-
-    **Models Included:**
-
-    1. **Logistic Regression**
-       - Functionality: Linear model for classification
-       - Evaluation: ✓ Excellent baseline, fast, interpretable
-       - Best for: Quick prototyping, interpretable results
-
-    2. **Random Forest**
-       - Functionality: Ensemble of decision trees
-       - Evaluation: ✓ Good for non-linear patterns, handles overfitting well
-       - Best for: Complex patterns, feature importance analysis
-
-    3. **Naive Bayes (MultinomialNB)**
-       - Functionality: Probabilistic classifier based on Bayes theorem
-       - Evaluation: ✓ Very fast, works well with text data
-       - Best for: Large datasets, real-time predictions
-
-    4. **Support Vector Machine (SVM)**
-       - Functionality: Finds optimal hyperplane for classification
-       - Evaluation: ✓ Excellent for high-dimensional text data
-       - ⚠ Warning: Can be slow on large datasets
-       - Best for: Small to medium datasets with high accuracy requirements
-
-    5. **Gradient Boosting**
-       - Functionality: Sequential ensemble learning
-       - Evaluation: ✓ Often achieves highest accuracy among traditional methods
-       - ⚠ Warning: Slower training, prone to overfitting
-       - Best for: Competitions, maximum accuracy needed
-
-    Returns:
-        dict: Dictionary of model names and instances
     """
     models = {
         'Logistic Regression': LogisticRegression(
@@ -310,37 +302,13 @@ def get_sentiment_models():
 
 
 # ============================================================================
-# BERT-BASED SENTIMENT ANALYSIS (STATE-OF-THE-ART)
+# BERT-BASED SENTIMENT ANALYSIS
 # ============================================================================
 
 @st.cache_resource
 def load_bert_sentiment_model():
     """
     Load pre-trained BERT model for sentiment analysis.
-
-    **Model: DistilBERT**
-    - Functionality: Distilled version of BERT (40% smaller, 60% faster)
-    - Pre-trained on: Stanford Sentiment Treebank (SST-2)
-    - Output: Binary sentiment (positive/negative) with confidence scores
-
-    **Evaluation:**
-    ✓ Excellent: State-of-the-art accuracy (>90% on SST-2)
-    ✓ Good: Faster than full BERT while maintaining performance
-    ✓ Good: Pre-trained, no fine-tuning needed for basic sentiment
-    ⚠ Limitation: Binary sentiment (can be adapted for multi-class)
-
-    **How well is it used:**
-    ✓ Perfect for: General sentiment analysis with high accuracy
-    ✓ Production-ready: Optimized for speed and memory
-    ⚠ Consider: Fine-tuning on your specific domain for better results
-
-    **Alternative Models:**
-    - 'nlptown/bert-base-multilingual-uncased-sentiment' (5-class sentiment)
-    - 'cardiffnlp/twitter-roberta-base-sentiment' (Twitter-specific)
-    - 'distilbert-base-uncased' (for fine-tuning on custom data)
-
-    Returns:
-        pipeline: Hugging Face sentiment analysis pipeline
     """
     if not TRANSFORMERS_AVAILABLE:
         return None
@@ -368,24 +336,6 @@ def load_bert_sentiment_model():
 def load_multiclass_bert_model():
     """
     Load BERT model for multi-class emotion classification.
-
-    **Model: DistilBERT fine-tuned on emotions**
-    - Functionality: Classifies text into 6 emotions (joy, sadness, anger, fear, love, surprise)
-    - Architecture: DistilBERT + classification head
-    - Training: Fine-tuned on emotion datasets
-
-    **Evaluation:**
-    ✓ Excellent: Matches emotion classes in your dataset
-    ✓ Good: Context-aware emotion detection
-    ✓ Good: Handles nuanced emotional expressions
-
-    **How well is it used:**
-    ✓ Perfect for: Emotion classification tasks
-    ✓ Better than: Traditional ML for complex emotional context
-    ⚠ Slower than: Traditional ML (trade-off for accuracy)
-
-    Returns:
-        tuple: (model, tokenizer)
     """
     if not TRANSFORMERS_AVAILABLE:
         return None, None
@@ -411,25 +361,6 @@ def load_multiclass_bert_model():
 def predict_with_bert(texts, model, tokenizer, batch_size=16):
     """
     Predict emotions using BERT model.
-
-    **Functionality:**
-    - Tokenizes input texts
-    - Runs inference through BERT model
-    - Returns emotion predictions and probabilities
-
-    **Evaluation:**
-    ✓ Good: Batch processing for efficiency
-    ✓ Good: Handles variable-length inputs
-    ✓ Good: Returns both predictions and confidence scores
-
-    Args:
-        texts (list): List of text strings
-        model: BERT model
-        tokenizer: BERT tokenizer
-        batch_size (int): Batch size for inference
-
-    Returns:
-        tuple: (predictions, probabilities)
     """
     if model is None or tokenizer is None:
         return None, None
@@ -469,194 +400,433 @@ def predict_with_bert(texts, model, tokenizer, batch_size=16):
 
 
 # ============================================================================
-# MODEL EVALUATION
+# ZERO-SHOT CLASSIFICATION FOR SOCIAL COMMERCE TOPICS
 # ============================================================================
 
-def cross_validate_model(model, X_train_tfidf, y_train, cv=5, scoring='accuracy'):
+@st.cache_resource
+def load_zero_shot_classifier():
     """
-    Perform cross-validation on a model.
+    Load Zero-Shot Classification model for predefined topic classification.
 
-    **Functionality:**
-    - Uses StratifiedKFold to maintain class distribution
-    - Evaluates model on multiple folds
-    - Returns mean and standard deviation of scores
+    **Model: facebook/bart-large-mnli**
+    - No training required - works out of the box
+    - Classifies text into ANY predefined categories you specify
+    - Perfect for social commerce behavior classification
+
+    **How it works:**
+    - Uses Natural Language Inference (NLI)
+    - Treats classification as "Does this text entail this label?"
+    - Returns probability scores for each label
 
     **Evaluation:**
-    ✓ Good: Stratified K-Fold maintains class balance
-    ✓ Good: Multiple folds reduce variance
-    ⚠ Consider: Using additional scoring metrics (F1, ROC-AUC)
-
-    Args:
-        model: Scikit-learn model instance
-        X_train_tfidf: Vectorized training features
-        y_train: Training labels
-        cv (int): Number of folds
-        scoring (str): Scoring metric
+    ✓ Excellent: No training data needed
+    ✓ Excellent: Works with any custom labels
+    ✓ Good: Semantic understanding of topics
+    ⚠ Slower than: Traditional classifiers
 
     Returns:
-        tuple: (mean_score, std_score)
+        pipeline: Zero-shot classification pipeline
     """
-    skf = StratifiedKFold(n_splits=cv, shuffle=True, random_state=RANDOM_STATE)
-    scores = cross_val_score(model, X_train_tfidf, y_train, cv=skf, scoring=scoring, n_jobs=-1)
-    return scores.mean(), scores.std()
-
-
-def evaluate_model_optimized(model, X_train_tfidf, X_test_tfidf, y_train, y_test, all_classes, calc_auc=False):
-    """
-    Comprehensive model evaluation with multiple metrics.
-
-    **Metrics Calculated:**
-    - Accuracy: Overall correctness
-    - Precision: How many predicted positives are correct
-    - Recall: How many actual positives were found
-    - F1 Score: Harmonic mean of precision and recall
-    - ROC-AUC: Area under ROC curve (if calc_auc=True)
-
-    **Evaluation:**
-    ✓ Good: Comprehensive metrics suite
-    ✓ Good: Handles multi-class classification
-    ✓ Good: Aligns probabilities for classes not seen in training
-    ⚠ Consider: Adding confusion matrix
-    ⚠ Consider: Per-class metrics for imbalanced datasets
-
-    Args:
-        model: Scikit-learn model
-        X_train_tfidf: Training features
-        X_test_tfidf: Test features
-        y_train: Training labels
-        y_test: Test labels
-        all_classes: All unique class labels
-        calc_auc (bool): Whether to calculate ROC-AUC
-
-    Returns:
-        tuple: (accuracy, precision, recall, f1, roc_auc)
-    """
-    # Train model
-    model.fit(X_train_tfidf, y_train)
-
-    # Predictions
-    y_pred = model.predict(X_test_tfidf)
-
-    # Calculate metrics
-    accuracy = accuracy_score(y_test, y_pred)
-    precision = precision_score(y_test, y_pred, average='weighted', zero_division=0)
-    recall = recall_score(y_test, y_pred, average='weighted', zero_division=0)
-    f1 = f1_score(y_test, y_pred, average='weighted', zero_division=0)
-
-    # ROC-AUC calculation
-    roc_auc = None
-    if calc_auc and hasattr(model, "predict_proba"):
-        y_score = model.predict_proba(X_test_tfidf)
-
-        # Align probabilities if model doesn't have all classes
-        if y_score.shape[1] < len(all_classes):
-            aligned_probs = np.zeros((y_score.shape[0], len(all_classes)))
-            for i, label in enumerate(model.classes_):
-                aligned_probs[:, label] = y_score[:, i]
-            y_score = aligned_probs
-
-        # Create binary labels for multi-class ROC-AUC
-        y_test_bin = np.zeros((len(y_test), len(all_classes)))
-        for i, label in enumerate(y_test):
-            y_test_bin[i, label] = 1
-
-        roc_auc = roc_auc_score(y_test_bin, y_score, multi_class='ovr')
-
-    return accuracy, precision, recall, f1, roc_auc
-
-
-def evaluate_bert_model(bert_model, tokenizer, X_test, y_test):
-    """
-    Evaluate BERT model on test data.
-
-    **Functionality:**
-    - Runs BERT inference on test set
-    - Calculates standard classification metrics
-    - Compares with traditional ML performance
-
-    **Evaluation:**
-    ✓ Good: Fair comparison with traditional models
-    ✓ Good: Provides comprehensive metrics
-
-    Args:
-        bert_model: BERT model
-        tokenizer: BERT tokenizer
-        X_test: Test texts
-        y_test: True labels
-
-    Returns:
-        dict: Evaluation metrics
-    """
-    if bert_model is None or tokenizer is None:
+    if not TRANSFORMERS_AVAILABLE:
         return None
 
-    # Convert to list
-    test_texts = X_test.tolist() if hasattr(X_test, 'tolist') else list(X_test)
+    try:
+        device = 0 if torch.cuda.is_available() else -1
 
-    # Predict
-    predictions, probabilities = predict_with_bert(test_texts, bert_model, tokenizer)
+        # Use bart-large-mnli for best accuracy, or deberta for speed
+        classifier = pipeline(
+            "zero-shot-classification",
+            model="facebook/bart-large-mnli",
+            device=device
+        )
 
-    if predictions is None:
+        return classifier
+    except Exception as e:
+        st.error(f"Error loading zero-shot classifier: {str(e)}")
         return None
 
-    # Calculate metrics
-    accuracy = accuracy_score(y_test, predictions)
-    precision = precision_score(y_test, predictions, average='weighted', zero_division=0)
-    recall = recall_score(y_test, predictions, average='weighted', zero_division=0)
-    f1 = f1_score(y_test, predictions, average='weighted', zero_division=0)
 
-    # ROC-AUC
-    y_test_bin = np.zeros((len(y_test), probabilities.shape[1]))
-    for i, label in enumerate(y_test):
-        y_test_bin[i, label] = 1
+def classify_social_commerce_topic(text, classifier, labels=None, multi_label=False):
+    """
+    Classify a single text into social commerce behavior topics.
 
-    roc_auc = roc_auc_score(y_test_bin, probabilities, multi_class='ovr')
+    **Functionality:**
+    - Uses zero-shot classification
+    - Returns topic predictions with confidence scores
+    - Supports multi-label classification (text can belong to multiple topics)
 
-    return {
-        'accuracy': accuracy,
-        'precision': precision,
-        'recall': recall,
-        'f1': f1,
-        'roc_auc': roc_auc
-    }
+    Args:
+        text (str): Input text to classify
+        classifier: Zero-shot classification pipeline
+        labels (list): List of topic labels (default: SOCIAL_COMMERCE_LABELS)
+        multi_label (bool): Allow multiple labels per text
+
+    Returns:
+        dict: {
+            'labels': ['Purchase Intent', 'Social Influence', ...],
+            'scores': [0.85, 0.12, ...],
+            'top_label': 'Purchase Intent',
+            'top_score': 0.85
+        }
+    """
+    if classifier is None:
+        return None
+
+    if labels is None:
+        labels = SOCIAL_COMMERCE_LABELS
+
+    try:
+        result = classifier(
+            text,
+            candidate_labels=labels,
+            multi_label=multi_label
+        )
+
+        return {
+            'labels': result['labels'],
+            'scores': result['scores'],
+            'top_label': result['labels'][0],
+            'top_score': result['scores'][0]
+        }
+    except Exception as e:
+        st.error(f"Classification error: {str(e)}")
+        return None
+
+
+def classify_social_commerce_batch(texts, classifier, labels=None, multi_label=False, progress_callback=None):
+    """
+    Classify multiple texts into social commerce behavior topics.
+
+    **Functionality:**
+    - Batch processing for efficiency
+    - Progress tracking for large datasets
+    - Returns DataFrame with all predictions
+
+    Args:
+        texts (list): List of texts to classify
+        classifier: Zero-shot classification pipeline
+        labels (list): Topic labels
+        multi_label (bool): Allow multiple labels
+        progress_callback: Optional callback for progress updates
+
+    Returns:
+        pd.DataFrame: DataFrame with columns [text, topic, confidence, all_scores]
+    """
+    if classifier is None:
+        return None
+
+    if labels is None:
+        labels = SOCIAL_COMMERCE_LABELS
+
+    results = []
+    total = len(texts)
+
+    for i, text in enumerate(texts):
+        try:
+            result = classifier(
+                text[:512],  # Truncate long texts
+                candidate_labels=labels,
+                multi_label=multi_label
+            )
+
+            results.append({
+                'text': text[:100] + '...' if len(text) > 100 else text,
+                'topic': result['labels'][0],
+                'confidence': result['scores'][0],
+                'all_scores': dict(zip(result['labels'], result['scores']))
+            })
+
+            if progress_callback and i % 10 == 0:
+                progress_callback(i / total)
+
+        except Exception as e:
+            results.append({
+                'text': text[:100] + '...' if len(text) > 100 else text,
+                'topic': 'Error',
+                'confidence': 0.0,
+                'all_scores': {}
+            })
+
+    return pd.DataFrame(results)
 
 
 # ============================================================================
-# TOPIC MODELING - TRADITIONAL METHODS
+# GUIDED/SEEDED TOPIC MODELING
+# ============================================================================
+
+def perform_seeded_lda(texts, seed_topics_dict, n_topics=5, n_top_words=10):
+    """
+    Perform Seeded LDA (Guided LDA) with seed words for each topic.
+
+    **Functionality:**
+    - Uses seed words to guide topic discovery
+    - Each topic is "anchored" to specific seed words
+    - Combines domain knowledge with statistical topic modeling
+
+    **How it works:**
+    1. Creates a count vectorizer with vocabulary including seed words
+    2. Modifies LDA's prior to favor seed words for specific topics
+    3. Runs standard LDA with modified priors
+
+    **Evaluation:**
+    ✓ Good: Incorporates domain knowledge
+    ✓ Good: More interpretable topics
+    ⚠ May not discover unexpected topics
+    ⚠ Quality depends on seed word selection
+
+    Args:
+        texts (list): List of documents
+        seed_topics_dict (dict): {topic_name: [seed_words]}
+        n_topics (int): Number of topics
+        n_top_words (int): Top words to return per topic
+
+    Returns:
+        tuple: (model, vectorizer, topics_dict, doc_topic_matrix)
+    """
+    # Create vocabulary that includes all seed words
+    all_seed_words = []
+    for topic_words in seed_topics_dict.values():
+        all_seed_words.extend(topic_words)
+
+    # Create vectorizer
+    vectorizer = CountVectorizer(
+        max_features=2000,
+        max_df=0.95,
+        min_df=2,
+        stop_words='english'
+    )
+
+    doc_term_matrix = vectorizer.fit_transform(texts)
+    feature_names = vectorizer.get_feature_names_out()
+
+    # Create seed word to topic mapping
+    word_to_idx = {word: idx for idx, word in enumerate(feature_names)}
+
+    # Initialize LDA
+    lda = LatentDirichletAllocation(
+        n_components=n_topics,
+        random_state=RANDOM_STATE,
+        max_iter=50,
+        learning_method='batch',
+        n_jobs=-1
+    )
+
+    # Fit LDA
+    lda.fit(doc_term_matrix)
+
+    # Modify components to boost seed words
+    for topic_idx, (topic_name, seed_words) in enumerate(seed_topics_dict.items()):
+        if topic_idx >= n_topics:
+            break
+        for seed_word in seed_words:
+            seed_word_lower = seed_word.lower()
+            if seed_word_lower in word_to_idx:
+                word_idx = word_to_idx[seed_word_lower]
+                # Boost seed word weight
+                lda.components_[topic_idx, word_idx] *= 5.0
+
+    # Normalize components
+    lda.components_ = lda.components_ / lda.components_.sum(axis=1, keepdims=True)
+
+    # Extract topics
+    topics_dict = {}
+    for topic_idx, topic in enumerate(lda.components_):
+        topic_name = list(seed_topics_dict.keys())[topic_idx] if topic_idx < len(seed_topics_dict) else f"Topic {topic_idx + 1}"
+        top_word_indices = topic.argsort()[-n_top_words:][::-1]
+        top_words = [feature_names[i] for i in top_word_indices]
+        topics_dict[topic_name] = top_words
+
+    # Get document-topic distribution
+    doc_topics = lda.transform(doc_term_matrix)
+
+    return lda, vectorizer, topics_dict, doc_topics
+
+
+def perform_corex_topic_modeling(texts, anchor_words_dict, n_topics=5, n_top_words=10):
+    """
+    Perform Anchored CorEx (Correlation Explanation) Topic Modeling.
+
+    **CorEx Advantages:**
+    - Information-theoretic approach (not probabilistic like LDA)
+    - Built-in support for anchor words
+    - More stable and reproducible than LDA
+    - Better topic coherence with domain guidance
+
+    **How it works:**
+    1. Uses Total Correlation to find topics
+    2. Anchor words "nudge" topics toward specific themes
+    3. Discovers additional patterns beyond anchors
+
+    **Evaluation:**
+    ✓ Excellent: Native support for guided/anchored topics
+    ✓ Excellent: Information-theoretic foundation
+    ✓ Good: Handles short texts well
+    ⚠ Requires: pip install corextopic
+
+    Args:
+        texts (list): List of documents
+        anchor_words_dict (dict): {topic_name: [anchor_words]}
+        n_topics (int): Number of topics
+        n_top_words (int): Words per topic
+
+    Returns:
+        tuple: (model, vectorizer, topics_dict, doc_topic_matrix)
+    """
+    if not COREX_AVAILABLE:
+        st.warning("CorEx not installed. Install with: pip install corextopic")
+        return None, None, None, None
+
+    # Create vectorizer
+    vectorizer = CountVectorizer(
+        max_features=2000,
+        max_df=0.95,
+        min_df=2,
+        stop_words='english',
+        binary=True  # CorEx works better with binary counts
+    )
+
+    doc_term_matrix = vectorizer.fit_transform(texts)
+    feature_names = list(vectorizer.get_feature_names_out())
+
+    # Prepare anchor words
+    anchors = []
+    anchor_strength = 3  # How strongly to push topics toward anchors
+
+    for topic_name, topic_anchors in anchor_words_dict.items():
+        # Filter anchors that exist in vocabulary
+        valid_anchors = [word.lower() for word in topic_anchors if word.lower() in feature_names]
+        if valid_anchors:
+            anchors.append(valid_anchors)
+
+    # Pad with empty lists if fewer anchor groups than topics
+    while len(anchors) < n_topics:
+        anchors.append([])
+
+    # Create CorEx model
+    topic_model = CorEx(
+        n_hidden=n_topics,
+        seed=RANDOM_STATE,
+        max_iter=200
+    )
+
+    # Fit with anchors
+    topic_model.fit(
+        doc_term_matrix,
+        words=feature_names,
+        anchors=anchors[:n_topics],
+        anchor_strength=anchor_strength
+    )
+
+    # Extract topics
+    topics_dict = {}
+    topic_names = list(anchor_words_dict.keys())
+
+    for topic_idx in range(n_topics):
+        topic_name = topic_names[topic_idx] if topic_idx < len(topic_names) else f"Topic {topic_idx + 1}"
+
+        # Get top words for this topic
+        topic_words = topic_model.get_topics(topic=topic_idx, n_words=n_top_words)
+        if topic_words:
+            words = [word for word, _, _ in topic_words]
+            topics_dict[topic_name] = words
+
+    # Get document-topic matrix
+    doc_topics = topic_model.transform(doc_term_matrix)
+
+    return topic_model, vectorizer, topics_dict, doc_topics
+
+
+def perform_seeded_bertopic(texts, seed_topics_dict, n_topics=5):
+    """
+    Perform BERTopic with Seeded Topics.
+
+    **BERTopic Seeded Topics (v0.15+):**
+    - Combines semantic embeddings with seed word guidance
+    - Best of both worlds: semantic understanding + domain knowledge
+    - More interpretable topics aligned with your categories
+
+    **How it works:**
+    1. Creates semantic embeddings for all documents
+    2. Uses seed words to create topic representations
+    3. Assigns documents to seed-guided topics
+    4. Refines topics based on document clusters
+
+    **Evaluation:**
+    ✓ Excellent: State-of-the-art embeddings
+    ✓ Excellent: Semantic understanding
+    ✓ Good: Guided by domain knowledge
+    ⚠ Requires: BERTopic v0.15+
+
+    Args:
+        texts (list): List of documents
+        seed_topics_dict (dict): {topic_name: [seed_words]}
+        n_topics (int): Number of topics
+
+    Returns:
+        tuple: (topic_model, topics, probabilities, topics_dict)
+    """
+    if not BERTOPIC_AVAILABLE:
+        st.warning("BERTopic not installed. Install with: pip install bertopic sentence-transformers")
+        return None, None, None, None
+
+    try:
+        # Load sentence transformer
+        embedding_model = SentenceTransformer('all-MiniLM-L6-v2')
+
+        # Prepare seed topic list for BERTopic
+        # Format: [[seed_word1, seed_word2], [seed_word3, seed_word4], ...]
+        seed_topic_list = [words[:10] for words in seed_topics_dict.values()]
+
+        # Create BERTopic with seeded topics
+        topic_model = BERTopic(
+            embedding_model=embedding_model,
+            min_topic_size=10,
+            nr_topics=n_topics,
+            seed_topic_list=seed_topic_list,
+            calculate_probabilities=True,
+            verbose=False
+        )
+
+        # Fit model
+        topics, probabilities = topic_model.fit_transform(texts)
+
+        # Map discovered topics to our predefined names
+        topic_info = topic_model.get_topic_info()
+        topics_dict = {}
+
+        topic_names = list(seed_topics_dict.keys())
+
+        for idx, topic_id in enumerate(topic_info['Topic']):
+            if topic_id == -1:
+                continue  # Skip outlier topic
+
+            # Get topic words
+            topic_words = topic_model.get_topic(topic_id)
+            if topic_words:
+                words = [word for word, _ in topic_words[:10]]
+
+                # Use predefined name if available
+                if idx < len(topic_names):
+                    name = topic_names[idx]
+                else:
+                    name = f"Topic {topic_id}"
+
+                topics_dict[name] = words
+
+        return topic_model, topics, probabilities, topics_dict
+
+    except Exception as e:
+        st.error(f"Error in seeded BERTopic: {str(e)}")
+        return None, None, None, None
+
+
+# ============================================================================
+# TRADITIONAL TOPIC MODELING (LDA, NMF)
 # ============================================================================
 
 def perform_topic_modeling(texts, n_topics=5, method='lda', n_top_words=10):
     """
-    Perform topic modeling on text data using traditional methods.
-
-    **Methods Available:**
-
-    1. **LDA (Latent Dirichlet Allocation)**
-       - Functionality: Probabilistic generative model
-       - Evaluation: ✓ Industry standard, interpretable topics
-       - Best for: Discovering hidden topics in documents
-       - Assumptions: Documents are mixtures of topics
-
-    2. **NMF (Non-Negative Matrix Factorization)**
-       - Functionality: Linear algebra factorization
-       - Evaluation: ✓ Faster than LDA, clearer topics
-       - Best for: Sparse, non-negative data (like text)
-       - Advantages: Better for short texts
-
-    **Evaluation:**
-    ✓ Good: Supports multiple methods
-    ✓ Good: Configurable number of topics
-    ⚠ Consider: Adding coherence score calculation
-    ⚠ Consider: Adding dynamic topic number selection
-
-    Args:
-        texts (list): List of text documents
-        n_topics (int): Number of topics to extract
-        method (str): 'lda' or 'nmf'
-        n_top_words (int): Number of top words per topic
-
-    Returns:
-        tuple: (model, vectorizer, feature_names, topics_dict)
+    Perform topic modeling on text data using traditional methods (LDA or NMF).
     """
     # Create document-term matrix
     if method == 'lda':
@@ -710,37 +880,6 @@ def perform_topic_modeling(texts, n_topics=5, method='lda', n_top_words=10):
 def load_bertopic_model(n_topics=5):
     """
     Load or create BERTopic model for semantic topic modeling.
-
-    **BERTopic Architecture:**
-    - Step 1: BERT embeddings (semantic representations)
-    - Step 2: UMAP dimensionality reduction
-    - Step 3: HDBSCAN clustering
-    - Step 4: c-TF-IDF for topic representation
-
-    **Evaluation:**
-    ✓ Excellent: State-of-the-art topic modeling
-    ✓ Excellent: Captures semantic meaning, not just word co-occurrence
-    ✓ Good: Dynamic topic modeling (topics evolve over time)
-    ✓ Good: Better topic coherence than LDA/NMF
-    ⚠ Requires: More computational resources
-    ⚠ Slower than: Traditional methods
-
-    **How well is it used:**
-    ✓ Perfect for: Discovering semantic topics in modern text
-    ✓ Better than LDA when: You have computational resources and need best quality
-    ✓ Production-ready: Can be saved and loaded for inference
-
-    **Advantages over LDA/NMF:**
-    1. Semantic understanding (not just word patterns)
-    2. Better handling of synonyms and context
-    3. More coherent and interpretable topics
-    4. Can discover topics of varying granularity
-
-    Args:
-        n_topics (int): Target number of topics (auto if None)
-
-    Returns:
-        BERTopic: Configured BERTopic model
     """
     if not BERTOPIC_AVAILABLE:
         return None
@@ -768,25 +907,7 @@ def load_bertopic_model(n_topics=5):
 
 def perform_bertopic_modeling(texts, n_topics=5):
     """
-    Perform BERTopic modeling on text data.
-
-    **Functionality:**
-    - Creates semantic embeddings using sentence transformers
-    - Clusters similar documents
-    - Extracts representative keywords for each cluster
-    - Returns topics with coherent semantic meaning
-
-    **Evaluation:**
-    ✓ Excellent: Superior topic quality compared to LDA/NMF
-    ✓ Good: Handles short and long texts equally well
-    ✓ Good: Automatically determines optimal number of topics if not specified
-
-    Args:
-        texts (list): List of text documents
-        n_topics (int): Target number of topics
-
-    Returns:
-        tuple: (bertopic_model, topics, probabilities, topic_info)
+    Perform BERTopic modeling on text data (unsupervised).
     """
     if not BERTOPIC_AVAILABLE:
         return None, None, None, None
@@ -822,23 +943,6 @@ def perform_bertopic_modeling(texts, n_topics=5):
 def get_document_topics(model, vectorizer, texts, top_n=3):
     """
     Get dominant topics for each document (for LDA/NMF).
-
-    **Functionality:**
-    - Transforms documents into topic space
-    - Returns top N topics per document with probabilities
-
-    **Evaluation:**
-    ✓ Good: Provides topic distribution per document
-    ⚠ Consider: Adding topic visualization
-
-    Args:
-        model: Trained topic model (LDA or NMF)
-        vectorizer: Fitted vectorizer
-        texts (list): List of documents
-        top_n (int): Number of top topics to return
-
-    Returns:
-        list: List of tuples (topic_idx, probability) for each document
     """
     doc_term_matrix = vectorizer.transform(texts)
     doc_topics = model.transform(doc_term_matrix)
@@ -853,27 +957,186 @@ def get_document_topics(model, vectorizer, texts, top_n=3):
 
 
 # ============================================================================
+# TOPIC-SENTIMENT INTEGRATION
+# ============================================================================
+
+def combine_topic_sentiment(texts, topic_predictions, sentiment_predictions, emotion_mapping=EMOTION_MAPPING):
+    """
+    Combine topic and sentiment analysis results.
+
+    **Functionality:**
+    - Creates a unified view of topic + sentiment per document
+    - Enables analysis like "What emotions are associated with Purchase Intent?"
+    - Supports cross-tabulation and visualization
+
+    Args:
+        texts (list): Original texts
+        topic_predictions (list): Topic labels for each text
+        sentiment_predictions (list): Sentiment labels for each text
+        emotion_mapping (dict): Mapping from sentiment ID to emotion name
+
+    Returns:
+        pd.DataFrame: Combined results with columns [text, topic, sentiment, ...]
+    """
+    results = []
+
+    for i, text in enumerate(texts):
+        topic = topic_predictions[i] if i < len(topic_predictions) else "Unknown"
+        sentiment = sentiment_predictions[i] if i < len(sentiment_predictions) else "Unknown"
+
+        # Map sentiment ID to name if needed
+        if isinstance(sentiment, (int, np.integer)):
+            sentiment_name = emotion_mapping.get(sentiment, f"Class {sentiment}")
+        else:
+            sentiment_name = sentiment
+
+        results.append({
+            'text': text[:100] + '...' if len(text) > 100 else text,
+            'topic': topic,
+            'sentiment': sentiment_name
+        })
+
+    return pd.DataFrame(results)
+
+
+def analyze_topic_sentiment_distribution(combined_df):
+    """
+    Analyze sentiment distribution across topics.
+
+    **Functionality:**
+    - Creates cross-tabulation of topics vs sentiments
+    - Calculates sentiment distribution per topic
+    - Returns insights for visualization
+
+    Args:
+        combined_df (pd.DataFrame): DataFrame with 'topic' and 'sentiment' columns
+
+    Returns:
+        dict: {
+            'crosstab': pd.DataFrame,
+            'topic_dominant_sentiment': dict,
+            'sentiment_by_topic': dict
+        }
+    """
+    # Cross-tabulation
+    crosstab = pd.crosstab(combined_df['topic'], combined_df['sentiment'])
+
+    # Normalize by row (percentage within each topic)
+    crosstab_normalized = crosstab.div(crosstab.sum(axis=1), axis=0) * 100
+
+    # Find dominant sentiment for each topic
+    topic_dominant_sentiment = {}
+    for topic in crosstab.index:
+        dominant = crosstab.loc[topic].idxmax()
+        percentage = crosstab_normalized.loc[topic, dominant]
+        topic_dominant_sentiment[topic] = {
+            'dominant_sentiment': dominant,
+            'percentage': percentage
+        }
+
+    return {
+        'crosstab': crosstab,
+        'crosstab_normalized': crosstab_normalized,
+        'topic_dominant_sentiment': topic_dominant_sentiment
+    }
+
+
+# ============================================================================
+# MODEL EVALUATION
+# ============================================================================
+
+def cross_validate_model(model, X_train_tfidf, y_train, cv=5, scoring='accuracy'):
+    """
+    Perform cross-validation on a model.
+    """
+    skf = StratifiedKFold(n_splits=cv, shuffle=True, random_state=RANDOM_STATE)
+    scores = cross_val_score(model, X_train_tfidf, y_train, cv=skf, scoring=scoring, n_jobs=-1)
+    return scores.mean(), scores.std()
+
+
+def evaluate_model_optimized(model, X_train_tfidf, X_test_tfidf, y_train, y_test, all_classes, calc_auc=False):
+    """
+    Comprehensive model evaluation with multiple metrics.
+    """
+    # Train model
+    model.fit(X_train_tfidf, y_train)
+
+    # Predictions
+    y_pred = model.predict(X_test_tfidf)
+
+    # Calculate metrics
+    accuracy = accuracy_score(y_test, y_pred)
+    precision = precision_score(y_test, y_pred, average='weighted', zero_division=0)
+    recall = recall_score(y_test, y_pred, average='weighted', zero_division=0)
+    f1 = f1_score(y_test, y_pred, average='weighted', zero_division=0)
+
+    # ROC-AUC calculation
+    roc_auc = None
+    if calc_auc and hasattr(model, "predict_proba"):
+        y_score = model.predict_proba(X_test_tfidf)
+
+        # Align probabilities if model doesn't have all classes
+        if y_score.shape[1] < len(all_classes):
+            aligned_probs = np.zeros((y_score.shape[0], len(all_classes)))
+            for i, label in enumerate(model.classes_):
+                aligned_probs[:, label] = y_score[:, i]
+            y_score = aligned_probs
+
+        # Create binary labels for multi-class ROC-AUC
+        y_test_bin = np.zeros((len(y_test), len(all_classes)))
+        for i, label in enumerate(y_test):
+            y_test_bin[i, label] = 1
+
+        roc_auc = roc_auc_score(y_test_bin, y_score, multi_class='ovr')
+
+    return accuracy, precision, recall, f1, roc_auc
+
+
+def evaluate_bert_model(bert_model, tokenizer, X_test, y_test):
+    """
+    Evaluate BERT model on test data.
+    """
+    if bert_model is None or tokenizer is None:
+        return None
+
+    # Convert to list
+    test_texts = X_test.tolist() if hasattr(X_test, 'tolist') else list(X_test)
+
+    # Predict
+    predictions, probabilities = predict_with_bert(test_texts, bert_model, tokenizer)
+
+    if predictions is None:
+        return None
+
+    # Calculate metrics
+    accuracy = accuracy_score(y_test, predictions)
+    precision = precision_score(y_test, predictions, average='weighted', zero_division=0)
+    recall = recall_score(y_test, predictions, average='weighted', zero_division=0)
+    f1 = f1_score(y_test, predictions, average='weighted', zero_division=0)
+
+    # ROC-AUC
+    y_test_bin = np.zeros((len(y_test), probabilities.shape[1]))
+    for i, label in enumerate(y_test):
+        y_test_bin[i, label] = 1
+
+    roc_auc = roc_auc_score(y_test_bin, probabilities, multi_class='ovr')
+
+    return {
+        'accuracy': accuracy,
+        'precision': precision,
+        'recall': recall,
+        'f1': f1,
+        'roc_auc': roc_auc
+    }
+
+
+# ============================================================================
 # SENTIMENT ANALYSIS UTILITIES
 # ============================================================================
 
 def get_sentiment_intensity(text):
     """
     Get sentiment intensity using VADER.
-
-    **Functionality:**
-    - Uses VADER (Valence Aware Dictionary and sEntiment Reasoner)
-    - Returns compound score [-1, 1]
-
-    **Evaluation:**
-    ✓ Good: VADER is excellent for social media text
-    ✓ Good: Handles emojis, slang, capitalization
-    ⚠ Consider: Combining with TextBlob for robustness
-
-    Args:
-        text (str): Input text
-
-    Returns:
-        float: Compound sentiment score
     """
     analyzer = SentimentIntensityAnalyzer()
     return analyzer.polarity_scores(text)['compound']
@@ -882,20 +1145,6 @@ def get_sentiment_intensity(text):
 def get_subjectivity(text):
     """
     Get subjectivity score using TextBlob.
-
-    **Functionality:**
-    - Measures how subjective (opinionated) vs objective (factual) text is
-    - Score range: [0, 1] where 0 is objective, 1 is subjective
-
-    **Evaluation:**
-    ✓ Good: TextBlob is simple and effective
-    ⚠ Consider: Using pattern library for better accuracy
-
-    Args:
-        text (str): Input text
-
-    Returns:
-        float: Subjectivity score
     """
     return TextBlob(text).sentiment.subjectivity
 
@@ -903,21 +1152,6 @@ def get_subjectivity(text):
 def aspect_sentiment_analysis(text):
     """
     Perform aspect-based sentiment analysis using spaCy.
-
-    **Functionality:**
-    - Extracts noun phrases (aspects)
-    - Calculates sentiment for each aspect
-
-    **Evaluation:**
-    ✓ Good: Provides granular sentiment per aspect
-    ⚠ Consider: Using dependency parsing for better aspect extraction
-    ⚠ Consider: Using ABSA-specific models (PyABSA library)
-
-    Args:
-        text (str): Input text
-
-    Returns:
-        dict: Aspect -> sentiment score mapping
     """
     nlp = spacy.load("en_core_web_sm")
     doc = nlp(text)
@@ -937,16 +1171,6 @@ def aspect_sentiment_analysis(text):
 def display_results(model_name, accuracy, precision, recall, f1, roc_auc, cv_mean=None, cv_std=None):
     """
     Display model evaluation results in Streamlit.
-
-    Args:
-        model_name (str): Name of the model
-        accuracy (float): Accuracy score
-        precision (float): Precision score
-        recall (float): Recall score
-        f1 (float): F1 score
-        roc_auc (float): ROC-AUC score
-        cv_mean (float): Cross-validation mean score
-        cv_std (float): Cross-validation standard deviation
     """
     with st.expander(f"📊 Results for {model_name}"):
         col1, col2, col3 = st.columns(3)
@@ -976,7 +1200,7 @@ def main():
     st.set_page_config(page_title="Sentiment Analysis & Topic Modeling", layout="wide")
 
     st.title("🎭 Advanced Sentiment Analysis & Topic Modeling")
-    st.markdown("**Enhanced with BERT & BERTopic** | State-of-the-Art NLP Models")
+    st.markdown("**Enhanced with BERT, BERTopic & Social Commerce Topic Classification** | State-of-the-Art NLP Models")
     st.markdown("---")
 
     # Sidebar configuration
@@ -1013,11 +1237,11 @@ def main():
     if enable_topic_modeling:
         topic_method = st.sidebar.selectbox(
             "Topic Modeling Method",
-            ['lda', 'nmf', 'bertopic'] if BERTOPIC_AVAILABLE else ['lda', 'nmf']
+            ['Zero-Shot Classification', 'Seeded LDA', 'Anchored CorEx', 'Seeded BERTopic', 'LDA (Unsupervised)', 'NMF (Unsupervised)', 'BERTopic (Unsupervised)']
         )
         n_topics = st.sidebar.slider("Number of Topics", 3, 10, 5)
     else:
-        topic_method = 'lda'
+        topic_method = 'Zero-Shot Classification'
         n_topics = 5
 
     # Load data
@@ -1073,223 +1297,627 @@ def main():
         col1.metric("Training Samples", len(X_train))
         col2.metric("Test Samples", len(X_test))
 
-        # Traditional ML Models
-        if use_traditional and model_selection:
-            st.markdown("---")
-            st.header("🤖 Traditional Machine Learning Models")
+        # ====================================================================
+        # TABS FOR DIFFERENT ANALYSES
+        # ====================================================================
 
-            # Vectorization
-            X_train_tfidf, X_test_tfidf, vectorizer_tfidf = create_feature_vectors(
-                X_train, X_test, vectorizer_type='tfidf', max_features=MAX_FEATURES
-            )
+        tab1, tab2, tab3, tab4 = st.tabs([
+            "🤖 Sentiment Analysis",
+            "📚 Topic Modeling (Social Commerce)",
+            "🔗 Topic-Sentiment Integration",
+            "🔮 Interactive Prediction"
+        ])
 
-            all_classes = np.arange(len(np.unique(y_train)))
+        # ====================================================================
+        # TAB 1: SENTIMENT ANALYSIS
+        # ====================================================================
+        with tab1:
+            st.header("🤖 Sentiment Analysis")
 
-            all_models = get_sentiment_models()
-            selected_models = {k: v for k, v in all_models.items() if k in model_selection}
+            # Traditional ML Models
+            if use_traditional and model_selection:
+                st.subheader("📊 Traditional Machine Learning Models")
 
-            with st.spinner("Training and evaluating traditional ML models..."):
-                for name, model in selected_models.items():
-                    cv_mean, cv_std = cross_validate_model(
-                        model, X_train_tfidf, y_train, cv=5, scoring='accuracy'
-                    )
-                    results = evaluate_model_optimized(
-                        model, X_train_tfidf, X_test_tfidf, y_train, y_test, all_classes, calc_auc=True
-                    )
-                    display_results(
-                        model_name=name,
-                        accuracy=results[0],
-                        precision=results[1],
-                        recall=results[2],
-                        f1=results[3],
-                        roc_auc=results[4],
-                        cv_mean=cv_mean,
-                        cv_std=cv_std
-                    )
+                # Vectorization
+                X_train_tfidf, X_test_tfidf, vectorizer_tfidf = create_feature_vectors(
+                    X_train, X_test, vectorizer_type='tfidf', max_features=MAX_FEATURES
+                )
 
-        # BERT Model
-        if use_bert and TRANSFORMERS_AVAILABLE:
-            st.markdown("---")
-            st.header("🚀 BERT-Based Sentiment Analysis")
+                all_classes = np.arange(len(np.unique(y_train)))
 
-            with st.spinner("Loading BERT model..."):
-                bert_model, bert_tokenizer = load_multiclass_bert_model()
+                all_models = get_sentiment_models()
+                selected_models = {k: v for k, v in all_models.items() if k in model_selection}
 
-            if bert_model is not None:
-                with st.spinner("Evaluating BERT model..."):
-                    # Use original text for BERT (not processed)
-                    X_train_orig = data.loc[X_train.index, 'text']
-                    X_test_orig = data.loc[X_test.index, 'text']
-
-                    bert_results = evaluate_bert_model(bert_model, bert_tokenizer, X_test_orig, y_test)
-
-                    if bert_results:
+                with st.spinner("Training and evaluating traditional ML models..."):
+                    for name, model in selected_models.items():
+                        cv_mean, cv_std = cross_validate_model(
+                            model, X_train_tfidf, y_train, cv=5, scoring='accuracy'
+                        )
+                        results = evaluate_model_optimized(
+                            model, X_train_tfidf, X_test_tfidf, y_train, y_test, all_classes, calc_auc=True
+                        )
                         display_results(
-                            model_name="BERT (DistilBERT-Emotion)",
-                            accuracy=bert_results['accuracy'],
-                            precision=bert_results['precision'],
-                            recall=bert_results['recall'],
-                            f1=bert_results['f1'],
-                            roc_auc=bert_results['roc_auc']
+                            model_name=name,
+                            accuracy=results[0],
+                            precision=results[1],
+                            recall=results[2],
+                            f1=results[3],
+                            roc_auc=results[4],
+                            cv_mean=cv_mean,
+                            cv_std=cv_std
                         )
 
-                        st.success("✓ BERT model evaluation complete!")
-                    else:
-                        st.warning("BERT evaluation failed.")
-            else:
-                st.warning("BERT model could not be loaded.")
+            # BERT Model
+            if use_bert and TRANSFORMERS_AVAILABLE:
+                st.subheader("🚀 BERT-Based Sentiment Analysis")
 
-        # Topic Modeling
-        if enable_topic_modeling:
+                with st.spinner("Loading BERT model..."):
+                    bert_model, bert_tokenizer = load_multiclass_bert_model()
+
+                if bert_model is not None:
+                    with st.spinner("Evaluating BERT model..."):
+                        # Use original text for BERT (not processed)
+                        X_train_orig = data.loc[X_train.index, 'text']
+                        X_test_orig = data.loc[X_test.index, 'text']
+
+                        bert_results = evaluate_bert_model(bert_model, bert_tokenizer, X_test_orig, y_test)
+
+                        if bert_results:
+                            display_results(
+                                model_name="BERT (DistilBERT-Emotion)",
+                                accuracy=bert_results['accuracy'],
+                                precision=bert_results['precision'],
+                                recall=bert_results['recall'],
+                                f1=bert_results['f1'],
+                                roc_auc=bert_results['roc_auc']
+                            )
+
+                            st.success("✓ BERT model evaluation complete!")
+                        else:
+                            st.warning("BERT evaluation failed.")
+                else:
+                    st.warning("BERT model could not be loaded.")
+
+        # ====================================================================
+        # TAB 2: TOPIC MODELING (SOCIAL COMMERCE)
+        # ====================================================================
+        with tab2:
+            st.header("📚 Topic Modeling for Social Commerce Behavior")
+
+            # Display predefined topics
+            st.subheader("🎯 Predefined Social Commerce Topics")
+            st.markdown("""
+            These are your **5 target topics** for social commerce behavior classification:
+            """)
+
+            for topic_name, topic_info in SOCIAL_COMMERCE_TOPICS.items():
+                with st.expander(f"**{topic_name}**"):
+                    st.write(f"**Description:** {topic_info['description']}")
+                    st.write(f"**Seed Words:** {', '.join(topic_info['seed_words'][:10])}...")
+
             st.markdown("---")
-            st.header("📚 Topic Modeling")
 
-            if topic_method == 'bertopic' and BERTOPIC_AVAILABLE:
-                st.subheader("🎯 BERTopic - Semantic Topic Discovery")
+            # Topic modeling method selection (from sidebar)
+            st.subheader(f"📖 Selected Method: {topic_method}")
 
-                with st.spinner("Performing BERTopic analysis... (this may take a minute)"):
-                    # Use original text for BERTopic
-                    topic_model, topics, probs, topics_dict = perform_bertopic_modeling(
-                        data['text'].tolist(),
-                        n_topics=n_topics
-                    )
+            # Prepare seed words
+            seed_words_dict = {name: info['seed_words'] for name, info in SOCIAL_COMMERCE_TOPICS.items()}
 
-                if topics_dict:
-                    st.success(f"✓ Discovered {len(topics_dict)} semantic topics!")
+            if st.button("🚀 Run Topic Modeling", type="primary"):
 
+                if topic_method == 'Zero-Shot Classification':
+                    # ========================================================
+                    # ZERO-SHOT CLASSIFICATION
+                    # ========================================================
+                    st.subheader("🎯 Zero-Shot Classification")
+                    st.markdown("""
+                    **How it works:**
+                    - Uses pre-trained NLI model (no training needed!)
+                    - Classifies each text into your predefined topics
+                    - Returns confidence scores for each topic
+
+                    **Best for:** When you have predefined categories and no labeled data
+                    """)
+
+                    if not TRANSFORMERS_AVAILABLE:
+                        st.error("❌ Transformers not installed. Install with: pip install transformers torch")
+                    else:
+                        with st.spinner("Loading Zero-Shot classifier..."):
+                            classifier = load_zero_shot_classifier()
+
+                        if classifier:
+                            # Sample texts for demo (full dataset would be slow)
+                            sample_size = min(100, len(data))
+                            sample_texts = data['text'].head(sample_size).tolist()
+
+                            st.info(f"📊 Classifying {sample_size} sample texts...")
+
+                            progress_bar = st.progress(0)
+
+                            with st.spinner("Classifying texts..."):
+                                results_df = classify_social_commerce_batch(
+                                    sample_texts,
+                                    classifier,
+                                    labels=SOCIAL_COMMERCE_LABELS,
+                                    multi_label=False,
+                                    progress_callback=lambda p: progress_bar.progress(p)
+                                )
+
+                            progress_bar.progress(1.0)
+
+                            if results_df is not None:
+                                st.success(f"✅ Classified {len(results_df)} texts!")
+
+                                # Store for later use
+                                st.session_state['topic_results'] = results_df
+
+                                # Topic distribution
+                                st.subheader("📊 Topic Distribution")
+                                topic_counts = results_df['topic'].value_counts()
+
+                                fig, ax = plt.subplots(figsize=(10, 5))
+                                colors = plt.cm.Set2(np.linspace(0, 1, len(topic_counts)))
+                                topic_counts.plot(kind='bar', ax=ax, color=colors)
+                                ax.set_xlabel("Social Commerce Topic")
+                                ax.set_ylabel("Document Count")
+                                ax.set_title("Distribution of Social Commerce Behavior Topics")
+                                plt.xticks(rotation=45, ha='right')
+                                plt.tight_layout()
+                                st.pyplot(fig)
+
+                                # Confidence distribution
+                                st.subheader("📈 Confidence Distribution")
+                                fig, ax = plt.subplots(figsize=(10, 4))
+                                results_df['confidence'].hist(bins=20, ax=ax, color='green', alpha=0.7)
+                                ax.set_xlabel("Confidence Score")
+                                ax.set_ylabel("Frequency")
+                                ax.set_title("Distribution of Classification Confidence")
+                                ax.axvline(results_df['confidence'].mean(), color='red', linestyle='--', label=f"Mean: {results_df['confidence'].mean():.2f}")
+                                ax.legend()
+                                st.pyplot(fig)
+
+                                # Sample results
+                                st.subheader("📝 Sample Classifications")
+                                st.dataframe(results_df[['text', 'topic', 'confidence']].head(20), use_container_width=True)
+
+                                # Per-topic examples
+                                st.subheader("🔍 Examples per Topic")
+                                for topic in SOCIAL_COMMERCE_LABELS:
+                                    topic_examples = results_df[results_df['topic'] == topic].head(3)
+                                    if len(topic_examples) > 0:
+                                        with st.expander(f"**{topic}** ({len(results_df[results_df['topic'] == topic])} documents)"):
+                                            for _, row in topic_examples.iterrows():
+                                                st.write(f"• *\"{row['text']}\"* (conf: {row['confidence']:.2f})")
+
+                elif topic_method == 'Seeded LDA':
+                    # ========================================================
+                    # SEEDED LDA
+                    # ========================================================
+                    st.subheader("🌱 Seeded LDA Topic Modeling")
+                    st.markdown("""
+                    **How it works:**
+                    - Standard LDA with seed words to guide each topic
+                    - Seed words are boosted in their assigned topics
+                    - Discovers additional related terms
+
+                    **Best for:** Combining statistical patterns with domain knowledge
+                    """)
+
+                    with st.spinner("Running Seeded LDA..."):
+                        lda_model, vectorizer, topics_dict, doc_topics = perform_seeded_lda(
+                            data['text_processed'].tolist(),
+                            seed_words_dict,
+                            n_topics=n_topics,
+                            n_top_words=10
+                        )
+
+                    st.success(f"✅ Discovered {len(topics_dict)} guided topics!")
+
+                    # Display topics
+                    st.subheader("📖 Discovered Topics (Guided by Seed Words)")
                     for topic_name, words in topics_dict.items():
                         with st.expander(f"**{topic_name}**"):
-                            st.write(f"**Keywords:** {', '.join(words)}")
+                            st.write(f"**Top Words:** {', '.join(words)}")
 
-                    # Topic distribution
-                    if topics is not None:
-                        st.subheader("Topic Distribution")
-                        fig, ax = plt.subplots(figsize=(10, 4))
-                        topic_counts = pd.Series(topics).value_counts().sort_index()
-                        topic_counts = topic_counts[topic_counts.index != -1]  # Remove outliers
-                        topic_counts.plot(kind='bar', ax=ax, color='green')
-                        ax.set_xlabel("Topic ID")
-                        ax.set_ylabel("Document Count")
-                        ax.set_title("Documents per Topic (BERTopic)")
-                        st.pyplot(fig)
+                            # Highlight seed words
+                            seed_words_in_topic = [w for w in words if w in [s.lower() for s in seed_words_dict.get(topic_name, [])]]
+                            if seed_words_in_topic:
+                                st.write(f"**Seed Words Found:** {', '.join(seed_words_in_topic)}")
 
-            else:
-                # Traditional topic modeling
-                st.subheader(f"📖 {topic_method.upper()} Topic Modeling")
+                    # Document-topic distribution
+                    st.subheader("📊 Document-Topic Distribution")
+                    dominant_topics = np.argmax(doc_topics, axis=1)
+                    topic_names = list(topics_dict.keys())
 
-                with st.spinner(f"Performing {topic_method.upper()} topic modeling..."):
-                    topic_model, topic_vectorizer, feature_names, topics_dict = perform_topic_modeling(
-                        data['text_processed'].tolist(),
-                        n_topics=n_topics,
-                        method=topic_method,
-                        n_top_words=10
-                    )
+                    topic_counts = pd.Series([topic_names[t] for t in dominant_topics]).value_counts()
 
-                st.success(f"✓ Discovered {len(topics_dict)} topics!")
-
-                for topic_name, words in topics_dict.items():
-                    with st.expander(f"**{topic_name}**"):
-                        st.write(f"**Keywords:** {', '.join(words)}")
-
-        # Interactive prediction
-        st.markdown("---")
-        st.header("🔮 Interactive Sentiment Prediction")
-
-        user_input = st.text_area("Enter text for sentiment analysis:", value="", height=100)
-        analyze_button = st.button("🔍 Analyze Sentiment", type="primary")
-
-        if user_input and analyze_button:
-            st.subheader("Analysis Results")
-
-            # Prepare input
-            processed_input = preprocess_text(clean_text(user_input))
-
-            # Traditional ML prediction
-            if use_traditional and model_selection:
-                st.write("### Traditional ML Prediction")
-
-                input_vectorized = vectorizer_tfidf.transform([processed_input])
-
-                selected_model = selected_models[list(selected_models.keys())[0]]
-                sentiment_pred = selected_model.predict(input_vectorized)[0]
-                sentiment_proba = selected_model.predict_proba(input_vectorized)[0]
-
-                sentiment_label = EMOTION_MAPPING[sentiment_pred]
-                st.success(f"**Predicted Emotion (Traditional ML):** {sentiment_label.upper()}")
-
-            # BERT prediction
-            if use_bert and TRANSFORMERS_AVAILABLE and bert_model is not None:
-                st.write("### BERT Prediction")
-
-                predictions, probabilities = predict_with_bert([user_input], bert_model, bert_tokenizer, batch_size=1)
-
-                if predictions is not None:
-                    bert_pred = predictions[0]
-                    bert_proba = probabilities[0]
-
-                    bert_label = EMOTION_MAPPING[bert_pred]
-                    st.success(f"**Predicted Emotion (BERT):** {bert_label.upper()}")
-
-                    sentiment_probabilities = {
-                        EMOTION_MAPPING[i]: prob for i, prob in enumerate(bert_proba)
-                    }
-
-                    top3_probabilities = sorted(sentiment_probabilities.items(), key=lambda x: x[1], reverse=True)[:3]
-
-                    # Display top 3 predictions
-                    st.write("#### Top 3 Predictions (BERT)")
-                    for i, (sentiment, prob) in enumerate(top3_probabilities):
-                        color = ['red', 'green', 'blue'][i]
-                        st.markdown(
-                            f"<div style='text-align:center;'>{sentiment.upper()}: "
-                            f"<span style='color:{color}; font-weight:bold;'>{prob * 100:.2f}%</span></div>",
-                            unsafe_allow_html=True
-                        )
-
-                    # Visualization
-                    sentiments, probabilities_vals = zip(*top3_probabilities)
                     fig, ax = plt.subplots(figsize=(10, 5))
-                    ax.bar(sentiments, [p * 100 for p in probabilities_vals], color=['red', 'green', 'blue'])
-                    ax.set_title("Top 3 Predicted Emotions (BERT)")
-                    ax.set_xlabel("Emotion")
-                    ax.set_ylabel("Confidence (%)")
+                    topic_counts.plot(kind='bar', ax=ax, color=plt.cm.Set3(np.linspace(0, 1, len(topic_counts))))
+                    ax.set_xlabel("Topic")
+                    ax.set_ylabel("Document Count")
+                    ax.set_title("Documents per Topic (Seeded LDA)")
+                    plt.xticks(rotation=45, ha='right')
+                    plt.tight_layout()
                     st.pyplot(fig)
 
-            # Additional analysis
-            col1, col2 = st.columns(2)
+                    # Store results
+                    st.session_state['topic_results'] = pd.DataFrame({
+                        'text': data['text'].values,
+                        'topic': [topic_names[t] for t in dominant_topics],
+                        'confidence': np.max(doc_topics, axis=1)
+                    })
 
-            with col1:
-                sentiment_intensity = get_sentiment_intensity(user_input)
-                st.write("**Sentiment Intensity (VADER):**")
-                st.progress(abs(sentiment_intensity))
-                st.write(f"Score: {sentiment_intensity:.4f}")
+                elif topic_method == 'Anchored CorEx':
+                    # ========================================================
+                    # ANCHORED COREX
+                    # ========================================================
+                    st.subheader("⚓ Anchored CorEx Topic Modeling")
+                    st.markdown("""
+                    **How it works:**
+                    - Information-theoretic approach (Total Correlation)
+                    - Native support for anchor words
+                    - More stable than LDA
 
-            with col2:
-                subjectivity = get_subjectivity(user_input)
-                st.write("**Subjectivity:**")
-                st.progress(subjectivity)
-                st.write(f"Score: {subjectivity:.4f}")
+                    **Best for:** Domain-specific topics with clear anchor terms
+                    """)
 
-            # Aspect-based sentiment
-            with st.expander("🔍 Aspect-Based Sentiment Analysis"):
-                aspect_sentiments = aspect_sentiment_analysis(user_input)
-                if aspect_sentiments:
-                    for aspect, sentiment in aspect_sentiments.items():
-                        sentiment_emoji = "😊" if sentiment > 0 else "😞" if sentiment < 0 else "😐"
-                        st.write(f"{sentiment_emoji} **{aspect}:** {sentiment:.2f}")
-                else:
-                    st.write("No aspects detected.")
+                    if not COREX_AVAILABLE:
+                        st.error("❌ CorEx not installed. Install with: pip install corextopic")
+                        st.code("pip install corextopic", language="bash")
+                    else:
+                        with st.spinner("Running Anchored CorEx..."):
+                            corex_model, vectorizer, topics_dict, doc_topics = perform_corex_topic_modeling(
+                                data['text_processed'].tolist(),
+                                seed_words_dict,
+                                n_topics=n_topics,
+                                n_top_words=10
+                            )
 
-            # Topic assignment
-            if enable_topic_modeling and topic_method != 'bertopic':
-                with st.expander("📚 Dominant Topics"):
-                    doc_topics = get_document_topics(
-                        topic_model, topic_vectorizer, [processed_input], top_n=3
+                        if topics_dict:
+                            st.success(f"✅ Discovered {len(topics_dict)} anchored topics!")
+
+                            # Display topics
+                            st.subheader("📖 Discovered Topics (Anchored)")
+                            for topic_name, words in topics_dict.items():
+                                with st.expander(f"**{topic_name}**"):
+                                    st.write(f"**Top Words:** {', '.join(words)}")
+
+                            # Document-topic distribution
+                            st.subheader("📊 Document-Topic Distribution")
+                            dominant_topics = np.argmax(doc_topics, axis=1)
+                            topic_names = list(topics_dict.keys())
+
+                            topic_counts = pd.Series([topic_names[t] if t < len(topic_names) else f"Topic {t}" for t in dominant_topics]).value_counts()
+
+                            fig, ax = plt.subplots(figsize=(10, 5))
+                            topic_counts.plot(kind='bar', ax=ax, color=plt.cm.Pastel1(np.linspace(0, 1, len(topic_counts))))
+                            ax.set_xlabel("Topic")
+                            ax.set_ylabel("Document Count")
+                            ax.set_title("Documents per Topic (Anchored CorEx)")
+                            plt.xticks(rotation=45, ha='right')
+                            plt.tight_layout()
+                            st.pyplot(fig)
+
+                            # Store results
+                            st.session_state['topic_results'] = pd.DataFrame({
+                                'text': data['text'].values,
+                                'topic': [topic_names[t] if t < len(topic_names) else f"Topic {t}" for t in dominant_topics],
+                                'confidence': np.max(doc_topics, axis=1)
+                            })
+
+                elif topic_method == 'Seeded BERTopic':
+                    # ========================================================
+                    # SEEDED BERTOPIC
+                    # ========================================================
+                    st.subheader("🤖 Seeded BERTopic")
+                    st.markdown("""
+                    **How it works:**
+                    - State-of-the-art BERT embeddings
+                    - Seed words guide topic formation
+                    - Semantic understanding + domain knowledge
+
+                    **Best for:** Maximum accuracy with guided topics
+                    """)
+
+                    if not BERTOPIC_AVAILABLE:
+                        st.error("❌ BERTopic not installed. Install with: pip install bertopic sentence-transformers")
+                    else:
+                        with st.spinner("Running Seeded BERTopic... (this may take a minute)"):
+                            topic_model, topics, probs, topics_dict = perform_seeded_bertopic(
+                                data['text'].tolist(),
+                                seed_words_dict,
+                                n_topics=n_topics
+                            )
+
+                        if topics_dict:
+                            st.success(f"✅ Discovered {len(topics_dict)} semantic topics!")
+
+                            # Display topics
+                            st.subheader("📖 Discovered Topics (Seeded BERTopic)")
+                            for topic_name, words in topics_dict.items():
+                                with st.expander(f"**{topic_name}**"):
+                                    st.write(f"**Top Words:** {', '.join(words)}")
+
+                            # Topic distribution
+                            st.subheader("📊 Topic Distribution")
+                            topic_counts = pd.Series(topics).value_counts().sort_index()
+                            topic_counts = topic_counts[topic_counts.index != -1]  # Remove outliers
+
+                            fig, ax = plt.subplots(figsize=(10, 5))
+                            topic_counts.plot(kind='bar', ax=ax, color=plt.cm.viridis(np.linspace(0, 1, len(topic_counts))))
+                            ax.set_xlabel("Topic ID")
+                            ax.set_ylabel("Document Count")
+                            ax.set_title("Documents per Topic (Seeded BERTopic)")
+                            st.pyplot(fig)
+
+                            # Store results
+                            topic_names = list(topics_dict.keys())
+                            st.session_state['topic_results'] = pd.DataFrame({
+                                'text': data['text'].values,
+                                'topic': [topic_names[t] if 0 <= t < len(topic_names) else 'Outlier' for t in topics],
+                                'confidence': np.max(probs, axis=1) if probs is not None else [1.0] * len(topics)
+                            })
+
+                elif topic_method in ['LDA (Unsupervised)', 'NMF (Unsupervised)']:
+                    # ========================================================
+                    # UNSUPERVISED LDA/NMF
+                    # ========================================================
+                    method_name = 'lda' if 'LDA' in topic_method else 'nmf'
+                    st.subheader(f"📖 {method_name.upper()} Topic Modeling (Unsupervised)")
+                    st.markdown("""
+                    **How it works:**
+                    - Standard unsupervised topic discovery
+                    - Topics are discovered purely from data patterns
+                    - May not align with your predefined categories
+
+                    **Best for:** Exploratory analysis when you don't know the topics
+                    """)
+
+                    with st.spinner(f"Running {method_name.upper()}..."):
+                        topic_model, vectorizer, feature_names, topics_dict = perform_topic_modeling(
+                            data['text_processed'].tolist(),
+                            n_topics=n_topics,
+                            method=method_name,
+                            n_top_words=10
+                        )
+
+                    st.success(f"✅ Discovered {len(topics_dict)} topics!")
+
+                    # Display topics
+                    st.subheader("📖 Discovered Topics")
+                    for topic_name, words in topics_dict.items():
+                        with st.expander(f"**{topic_name}**"):
+                            st.write(f"**Top Words:** {', '.join(words)}")
+
+                    st.warning("⚠️ These are unsupervised topics. They may not align with your predefined social commerce categories. Consider using Zero-Shot Classification or Seeded methods for better alignment.")
+
+                elif topic_method == 'BERTopic (Unsupervised)':
+                    # ========================================================
+                    # UNSUPERVISED BERTOPIC
+                    # ========================================================
+                    st.subheader("🤖 BERTopic (Unsupervised)")
+
+                    if not BERTOPIC_AVAILABLE:
+                        st.error("❌ BERTopic not installed.")
+                    else:
+                        with st.spinner("Running BERTopic..."):
+                            topic_model, topics, probs, topics_dict = perform_bertopic_modeling(
+                                data['text'].tolist(),
+                                n_topics=n_topics
+                            )
+
+                        if topics_dict:
+                            st.success(f"✅ Discovered {len(topics_dict)} semantic topics!")
+
+                            for topic_name, words in topics_dict.items():
+                                with st.expander(f"**{topic_name}**"):
+                                    st.write(f"**Top Words:** {', '.join(words)}")
+
+                            st.warning("⚠️ These are unsupervised topics. Consider using Seeded BERTopic for alignment with your categories.")
+
+        # ====================================================================
+        # TAB 3: TOPIC-SENTIMENT INTEGRATION
+        # ====================================================================
+        with tab3:
+            st.header("🔗 Topic-Sentiment Integration")
+            st.markdown("""
+            Combine topic classification with sentiment analysis to answer questions like:
+            - *"What emotions are associated with Purchase Intent?"*
+            - *"How do people feel when seeking information?"*
+            - *"Which topics have the most negative sentiment?"*
+            """)
+
+            if 'topic_results' not in st.session_state:
+                st.warning("⚠️ Please run Topic Modeling first (Tab 2) to enable integration.")
+            else:
+                topic_results = st.session_state['topic_results']
+
+                st.success(f"✅ Found topic results for {len(topic_results)} documents")
+
+                # Get sentiment predictions
+                st.subheader("🎭 Combining Topics with Sentiments")
+
+                if st.button("🔗 Run Integration Analysis"):
+                    # Use the sentiment from original data
+                    sentiments = data['sentiment'].values
+
+                    # Combine
+                    combined_df = combine_topic_sentiment(
+                        topic_results['text'].tolist(),
+                        topic_results['topic'].tolist(),
+                        sentiments,
+                        EMOTION_MAPPING
                     )
 
-                    for idx, (topic_idx, prob) in enumerate(doc_topics[0]):
-                        st.write(f"**Topic {topic_idx + 1}:** {prob:.4f}")
-                        st.write(f"Keywords: {', '.join(topics_dict[f'Topic {topic_idx + 1}'])}")
+                    st.session_state['combined_results'] = combined_df
+
+                    # Analyze distribution
+                    analysis = analyze_topic_sentiment_distribution(combined_df)
+
+                    # Cross-tabulation heatmap
+                    st.subheader("🔥 Topic-Sentiment Heatmap")
+                    fig, ax = plt.subplots(figsize=(12, 6))
+                    sns.heatmap(
+                        analysis['crosstab_normalized'],
+                        annot=True,
+                        fmt='.1f',
+                        cmap='YlOrRd',
+                        ax=ax,
+                        cbar_kws={'label': 'Percentage (%)'}
+                    )
+                    ax.set_title("Sentiment Distribution within Each Topic (%)")
+                    ax.set_xlabel("Sentiment/Emotion")
+                    ax.set_ylabel("Social Commerce Topic")
+                    plt.tight_layout()
+                    st.pyplot(fig)
+
+                    # Raw counts
+                    st.subheader("📊 Raw Counts")
+                    st.dataframe(analysis['crosstab'], use_container_width=True)
+
+                    # Dominant sentiment per topic
+                    st.subheader("🏆 Dominant Sentiment per Topic")
+                    for topic, info in analysis['topic_dominant_sentiment'].items():
+                        st.write(f"**{topic}**: {info['dominant_sentiment']} ({info['percentage']:.1f}%)")
+
+                    # Stacked bar chart
+                    st.subheader("📊 Stacked Sentiment Distribution")
+                    fig, ax = plt.subplots(figsize=(12, 6))
+                    analysis['crosstab_normalized'].plot(kind='bar', stacked=True, ax=ax, colormap='Set2')
+                    ax.set_xlabel("Social Commerce Topic")
+                    ax.set_ylabel("Percentage (%)")
+                    ax.set_title("Sentiment Distribution Across Topics")
+                    ax.legend(title='Sentiment', bbox_to_anchor=(1.05, 1), loc='upper left')
+                    plt.xticks(rotation=45, ha='right')
+                    plt.tight_layout()
+                    st.pyplot(fig)
+
+                    # Insights
+                    st.subheader("💡 Key Insights")
+                    st.markdown("""
+                    Based on the analysis:
+                    """)
+
+                    for topic, info in analysis['topic_dominant_sentiment'].items():
+                        if info['percentage'] > 40:
+                            st.write(f"• **{topic}** is strongly associated with **{info['dominant_sentiment']}** sentiment ({info['percentage']:.1f}%)")
+                        else:
+                            st.write(f"• **{topic}** has mixed sentiments (top: {info['dominant_sentiment']} at {info['percentage']:.1f}%)")
+
+        # ====================================================================
+        # TAB 4: INTERACTIVE PREDICTION
+        # ====================================================================
+        with tab4:
+            st.header("🔮 Interactive Prediction")
+
+            user_input = st.text_area("Enter text for analysis:", value="", height=100)
+
+            col1, col2 = st.columns(2)
+            with col1:
+                analyze_sentiment = st.checkbox("Analyze Sentiment", value=True)
+            with col2:
+                analyze_topic = st.checkbox("Classify Topic", value=True)
+
+            analyze_button = st.button("🔍 Analyze", type="primary")
+
+            if user_input and analyze_button:
+                st.subheader("Analysis Results")
+
+                # Topic Classification
+                if analyze_topic:
+                    st.markdown("### 📚 Topic Classification")
+
+                    if TRANSFORMERS_AVAILABLE:
+                        with st.spinner("Classifying topic..."):
+                            classifier = load_zero_shot_classifier()
+                            result = classify_social_commerce_topic(user_input, classifier)
+
+                        if result:
+                            col1, col2 = st.columns(2)
+                            with col1:
+                                st.metric("🎯 Predicted Topic", result['top_label'])
+                            with col2:
+                                st.metric("📈 Confidence", f"{result['top_score']:.2%}")
+
+                            # All scores
+                            st.write("**All Topic Scores:**")
+                            for label, score in zip(result['labels'], result['scores']):
+                                st.progress(score, text=f"{label}: {score:.2%}")
+                    else:
+                        st.warning("Install transformers for topic classification")
+
+                # Sentiment Analysis
+                if analyze_sentiment:
+                    st.markdown("### 🎭 Sentiment Analysis")
+
+                    # Prepare input
+                    processed_input = preprocess_text(clean_text(user_input))
+
+                    # Traditional ML prediction
+                    if use_traditional and model_selection:
+                        # Vectorization needed
+                        X_train_tfidf, X_test_tfidf, vectorizer_tfidf = create_feature_vectors(
+                            X_train, X_test, vectorizer_type='tfidf', max_features=MAX_FEATURES
+                        )
+
+                        input_vectorized = vectorizer_tfidf.transform([processed_input])
+
+                        all_models = get_sentiment_models()
+                        selected_model = all_models[model_selection[0]]
+                        selected_model.fit(X_train_tfidf, y_train)
+
+                        sentiment_pred = selected_model.predict(input_vectorized)[0]
+                        sentiment_proba = selected_model.predict_proba(input_vectorized)[0]
+
+                        sentiment_label = EMOTION_MAPPING[sentiment_pred]
+
+                        col1, col2 = st.columns(2)
+                        with col1:
+                            st.metric("🎯 Predicted Emotion (ML)", sentiment_label.upper())
+                        with col2:
+                            st.metric("📈 Confidence", f"{sentiment_proba.max():.2%}")
+
+                    # BERT prediction
+                    if use_bert and TRANSFORMERS_AVAILABLE:
+                        bert_model, bert_tokenizer = load_multiclass_bert_model()
+
+                        if bert_model is not None:
+                            predictions, probabilities = predict_with_bert([user_input], bert_model, bert_tokenizer, batch_size=1)
+
+                            if predictions is not None:
+                                bert_pred = predictions[0]
+                                bert_proba = probabilities[0]
+
+                                bert_label = EMOTION_MAPPING[bert_pred]
+
+                                col1, col2 = st.columns(2)
+                                with col1:
+                                    st.metric("🎯 Predicted Emotion (BERT)", bert_label.upper())
+                                with col2:
+                                    st.metric("📈 Confidence", f"{bert_proba.max():.2%}")
+
+                                # Top 3 emotions
+                                st.write("**Top 3 Emotions (BERT):**")
+                                sentiment_probabilities = {EMOTION_MAPPING[i]: prob for i, prob in enumerate(bert_proba)}
+                                top3 = sorted(sentiment_probabilities.items(), key=lambda x: x[1], reverse=True)[:3]
+
+                                for emotion, prob in top3:
+                                    st.progress(prob, text=f"{emotion}: {prob:.2%}")
+
+                    # Additional analysis
+                    col1, col2 = st.columns(2)
+
+                    with col1:
+                        sentiment_intensity = get_sentiment_intensity(user_input)
+                        st.write("**Sentiment Intensity (VADER):**")
+                        st.progress(abs(sentiment_intensity))
+                        st.write(f"Score: {sentiment_intensity:.4f}")
+
+                    with col2:
+                        subjectivity = get_subjectivity(user_input)
+                        st.write("**Subjectivity:**")
+                        st.progress(subjectivity)
+                        st.write(f"Score: {subjectivity:.4f}")
 
     except Exception as e:
         st.error(f"An error occurred: {str(e)}")
