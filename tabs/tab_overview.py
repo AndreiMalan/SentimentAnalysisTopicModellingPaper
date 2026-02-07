@@ -138,3 +138,47 @@ def render_tab(uploaded_file=None):
             display_cols = ["Brand", "Comment", "comment_clean", "comment_processed"]
             available = [c for c in display_cols if c in cleaned_df.columns]
             st.dataframe(cleaned_df[available].head(30), use_container_width=True)
+
+        # --- Full cleaned dataset view & download ---
+        st.subheader("5. Cleaned Dataset")
+        st.markdown(
+            "Browse the full cleaned dataset below. "
+            "**Original Comment** is shown side-by-side with the **Processed Text**."
+        )
+
+        # Build a display DataFrame with the columns the user cares about
+        view_cols = ["Brand", "Comment", "comment_processed"]
+        available_view = [c for c in view_cols if c in cleaned_df.columns]
+        view_df = cleaned_df[available_view].copy()
+        view_df.columns = [
+            {"Brand": "Brand", "Comment": "Original Comment",
+             "comment_processed": "Processed Text"}.get(c, c)
+            for c in available_view
+        ]
+
+        st.dataframe(view_df, use_container_width=True, height=400)
+
+        # Download buttons
+        st.markdown("**Download cleaned dataset:**")
+        dl_col1, dl_col2 = st.columns(2)
+
+        # CSV download
+        csv_bytes = view_df.to_csv(index=False).encode("utf-8")
+        dl_col1.download_button(
+            label="Download as CSV",
+            data=csv_bytes,
+            file_name="cleaned_comments.csv",
+            mime="text/csv",
+        )
+
+        # Excel download
+        from io import BytesIO
+        excel_buffer = BytesIO()
+        view_df.to_excel(excel_buffer, index=False, engine="openpyxl")
+        excel_buffer.seek(0)
+        dl_col2.download_button(
+            label="Download as Excel",
+            data=excel_buffer,
+            file_name="cleaned_comments.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        )
