@@ -46,6 +46,8 @@ venv.bak/
 !requirements.txt  # Exception: Always track requirements.txt
 *.json
 *.xml
+*.xlsx
+*.xls
 data/
 datasets/
 
