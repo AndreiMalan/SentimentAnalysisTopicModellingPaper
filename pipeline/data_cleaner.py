@@ -166,27 +166,37 @@ def _get_nlp_tools():
 
 
 def clean_text_basic(text: str) -> str:
-    """Basic cleaning: lowercase, remove URLs, numbers, punctuation."""
+    """Basic cleaning: lowercase, remove URLs, mentions, hashtags.
+
+    Numbers and punctuation are kept at this stage so that downstream
+    keyword matching (e.g. "5g", "usb 3.1", "4k") still works.
+    They are only stripped later in the NLP-preprocessing step.
+    """
     if not isinstance(text, str):
         text = str(text)
     text = text.lower()
-    text = re.sub(r"http\S+|www\.\S+", "", text)
-    text = re.sub(r"@\w+", "", text)           # mentions
-    text = re.sub(r"#\w+", "", text)            # hashtags
-    text = re.sub(r"\d+", "", text)             # numbers
-    text = text.translate(str.maketrans("", "", string.punctuation))
+    text = re.sub(r"http\S+|www\.\S+", "", text)   # URLs
+    text = re.sub(r"@\w+", "", text)                # mentions
+    text = re.sub(r"#(\w+)", r"\1", text)           # keep hashtag text
     text = re.sub(r"\s+", " ", text).strip()
     return text
 
 
 def preprocess_for_nlp(text: str) -> str:
-    """Full NLP preprocessing: tokenise, remove stopwords, lemmatise."""
+    """NLP preprocessing: tokenise, remove stopwords, lemmatise.
+
+    Keeps tokens of length >= 2 so short but meaningful words
+    (e.g. 'ok', 'no', '5g', 'tv') are preserved.
+    """
     stop_words, lemmatizer = _get_nlp_tools()
-    tokens = word_tokenize(text)
+    # Strip punctuation only for the NLP-processed column
+    text_clean = text.translate(str.maketrans("", "", string.punctuation))
+    text_clean = re.sub(r"\s+", " ", text_clean).strip()
+    tokens = word_tokenize(text_clean)
     tokens = [
         lemmatizer.lemmatize(w)
         for w in tokens
-        if w not in stop_words and len(w) > 2
+        if w not in stop_words and len(w) >= 2
     ]
     return " ".join(tokens)
 
@@ -195,14 +205,24 @@ def preprocess_for_nlp(text: str) -> str:
 # Full Pipeline
 # ---------------------------------------------------------------------------
 
+def _is_empty_after_clean(text: str) -> bool:
+    """Return True if text has no usable alphabetic content at all."""
+    alpha = re.sub(r"[^a-zA-Z]", "", str(text))
+    return len(alpha) == 0
+
+
 def run_cleaning_pipeline(
     df: pd.DataFrame,
     comment_col: str = "Comment",
     translate: bool = True,
-    min_token_length: int = 3,
+    min_token_length: int = 1,
     progress_callback=None,
 ) -> pd.DataFrame:
     """Run the complete cleaning pipeline on a comments DataFrame.
+
+    Only removes rows that are truly empty (no alphabetic characters at all
+    after encoding fix, emoji removal, and translation).  Short but
+    meaningful comments like "Waiting", "Launch date" are kept.
 
     Returns a new DataFrame with additional columns:
         - comment_fixed   : encoding-fixed text
@@ -220,7 +240,9 @@ def run_cleaning_pipeline(
     translate : bool
         Whether to translate non-English comments.
     min_token_length : int
-        Minimum number of tokens after processing; shorter comments are dropped.
+        Minimum number of tokens after NLP preprocessing; comments with
+        fewer tokens are dropped.  Default is 1 (only drop completely
+        empty comments).
     progress_callback : callable or None
         Called with (step_name: str, fraction: float) for progress tracking.
     """
@@ -241,14 +263,14 @@ def run_cleaning_pipeline(
     out["comment_no_emoji"] = out["comment_fixed"].apply(remove_emojis)
     _progress("Removing emojis", 1.0)
 
-    # 3. Language detection
+    # 3. Language detection (run on the emoji-cleaned text)
     _progress("Detecting languages", 0.0)
     out["detected_lang"] = out["comment_no_emoji"].apply(detect_language)
     _progress("Detecting languages", 1.0)
 
     out["is_english"] = out["detected_lang"] == "en"
 
-    # 4. Translation
+    # 4. Translation – translate non-English comments; keep originals on failure
     if translate and TRANSLATOR_AVAILABLE:
         _progress("Translating non-English comments", 0.0)
         non_en_mask = ~out["is_english"]
@@ -269,7 +291,7 @@ def run_cleaning_pipeline(
         out["comment_english"] = out["comment_no_emoji"]
     _progress("Translating non-English comments", 1.0)
 
-    # 5. Basic text cleaning
+    # 5. Basic text cleaning (keeps numbers and meaningful short words)
     _progress("Cleaning text", 0.0)
     out["comment_clean"] = out["comment_english"].apply(clean_text_basic)
     _progress("Cleaning text", 1.0)
@@ -279,12 +301,16 @@ def run_cleaning_pipeline(
     out["comment_processed"] = out["comment_clean"].apply(preprocess_for_nlp)
     _progress("NLP preprocessing", 1.0)
 
-    # 7. Filter very short comments
-    token_counts = out["comment_processed"].str.split().str.len().fillna(0)
-    out = out[token_counts >= min_token_length].reset_index(drop=True)
+    # 7. Only drop rows that are truly empty – no alphabetic content left
+    #    at all after the full pipeline (emoji-only, gibberish, etc.)
+    empty_mask = out["comment_processed"].apply(_is_empty_after_clean)
+    out = out[~empty_mask].reset_index(drop=True)
 
-    # 8. Drop duplicates on processed text
-    out = out.drop_duplicates(subset=["comment_processed"]).reset_index(drop=True)
+    # Also honour the min_token_length parameter (default 1 = keep everything
+    # that has at least one token)
+    if min_token_length > 0:
+        token_counts = out["comment_processed"].str.split().str.len().fillna(0)
+        out = out[token_counts >= min_token_length].reset_index(drop=True)
 
     _progress("Done", 1.0)
     return out
