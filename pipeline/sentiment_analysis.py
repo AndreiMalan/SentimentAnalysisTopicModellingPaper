@@ -13,12 +13,21 @@ import numpy as np
 import pandas as pd
 from typing import List, Dict, Tuple
 
-from nltk.sentiment import SentimentIntensityAnalyzer
-from textblob import TextBlob
-
 from config.constructs import EMOTION_LABELS
 
-# Optional transformer imports
+# Optional imports – wrapped so the module always loads
+try:
+    from nltk.sentiment import SentimentIntensityAnalyzer
+    VADER_AVAILABLE = True
+except ImportError:
+    VADER_AVAILABLE = False
+
+try:
+    from textblob import TextBlob
+    TEXTBLOB_AVAILABLE = True
+except ImportError:
+    TEXTBLOB_AVAILABLE = False
+
 try:
     from transformers import AutoTokenizer, AutoModelForSequenceClassification
     import torch
@@ -102,12 +111,22 @@ _VADER = None
 def _get_vader():
     global _VADER
     if _VADER is None:
+        if not VADER_AVAILABLE:
+            raise ImportError("pip install nltk  (and download vader_lexicon)")
         _VADER = SentimentIntensityAnalyzer()
     return _VADER
 
 
 def vader_sentiment(texts: List[str]) -> pd.DataFrame:
     """Compute VADER compound, positive, neutral, negative scores."""
+    if not VADER_AVAILABLE:
+        return pd.DataFrame({
+            "vader_compound": [0.0] * len(texts),
+            "vader_pos": [0.0] * len(texts),
+            "vader_neu": [1.0] * len(texts),
+            "vader_neg": [0.0] * len(texts),
+            "vader_label": ["neutral"] * len(texts),
+        })
     sia = _get_vader()
     rows = []
     for text in texts:
@@ -131,6 +150,12 @@ def vader_sentiment(texts: List[str]) -> pd.DataFrame:
 
 def textblob_sentiment(texts: List[str]) -> pd.DataFrame:
     """Compute TextBlob polarity and subjectivity."""
+    if not TEXTBLOB_AVAILABLE:
+        return pd.DataFrame({
+            "tb_polarity": [0.0] * len(texts),
+            "tb_subjectivity": [0.0] * len(texts),
+            "tb_label": ["neutral"] * len(texts),
+        })
     rows = []
     for text in texts:
         blob = TextBlob(text)

@@ -41,9 +41,13 @@ try:
 except ImportError:
     EMOJI_AVAILABLE = False
 
-from nltk.corpus import stopwords
-from nltk.tokenize import word_tokenize
-from nltk.stem import WordNetLemmatizer
+try:
+    from nltk.corpus import stopwords
+    from nltk.tokenize import word_tokenize
+    from nltk.stem import WordNetLemmatizer
+    NLTK_AVAILABLE = True
+except ImportError:
+    NLTK_AVAILABLE = False
 
 # ---------------------------------------------------------------------------
 # Step 1: Fix encoding / mojibake
@@ -149,6 +153,11 @@ _LEMMATIZER = None
 
 def _get_nlp_tools():
     global _STOP_WORDS, _LEMMATIZER
+    if not NLTK_AVAILABLE:
+        raise ImportError(
+            "nltk is required for preprocessing. "
+            "Install with: pip install nltk"
+        )
     if _STOP_WORDS is None:
         _STOP_WORDS = set(stopwords.words("english"))
     if _LEMMATIZER is None:
