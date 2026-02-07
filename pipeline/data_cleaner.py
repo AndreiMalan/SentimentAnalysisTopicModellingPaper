@@ -43,13 +43,39 @@ except ImportError:
 
 
 # ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+def _to_str(text) -> str:
+    """Safely convert any value to a usable string.
+
+    Returns "" for NaN, None, the literal string 'nan', or empty values.
+    """
+    if text is None:
+        return ""
+    if isinstance(text, float) and np.isnan(text):
+        return ""
+    s = str(text).strip()
+    if s.lower() == "nan" or s.lower() == "none" or s == "":
+        # Only treat as empty if it was a type-conversion artefact.
+        # A real comment typed "nan" by a human is extremely unlikely.
+        if not isinstance(text, str):
+            return ""
+        # If the original was already a string, check if it's literally "nan"
+        if text.strip().lower() in ("nan", "none", ""):
+            return ""
+    return str(text)
+
+
+# ---------------------------------------------------------------------------
 # Step 1: Fix encoding / mojibake
 # ---------------------------------------------------------------------------
 
-def fix_encoding(text: str) -> str:
+def fix_encoding(text) -> str:
     """Fix mojibake caused by YouTube API encoding issues."""
-    if not isinstance(text, str):
-        return str(text)
+    text = _to_str(text)
+    if not text:
+        return ""
     if FTFY_AVAILABLE:
         return ftfy.fix_text(text)
     return text
@@ -59,14 +85,11 @@ def fix_encoding(text: str) -> str:
 # Step 2: Remove emojis
 # ---------------------------------------------------------------------------
 
-def remove_emojis(text: str) -> str:
-    """Remove emoji characters from text.
-
-    Uses the ``emoji`` library which has a curated list of actual emoji
-    code-points.  A manual regex fallback is provided for when the library
-    is not installed, but it is intentionally narrow to avoid accidentally
-    stripping CJK, Korean, Arabic, or other legitimate scripts.
-    """
+def remove_emojis(text) -> str:
+    """Remove emoji characters from text."""
+    text = _to_str(text)
+    if not text:
+        return ""
     if EMOJI_AVAILABLE:
         text = emoji.replace_emoji(text, replace="")
     else:
@@ -92,8 +115,11 @@ def remove_emojis(text: str) -> str:
 # Step 3: Language detection
 # ---------------------------------------------------------------------------
 
-def detect_language(text: str) -> str:
+def detect_language(text) -> str:
     """Detect language of a text string. Returns ISO 639-1 code or 'unknown'."""
+    text = _to_str(text)
+    if not text:
+        return "unknown"
     if not LANGDETECT_AVAILABLE:
         return "unknown"
     # Strip non-letter chars for cleaner detection
@@ -109,7 +135,7 @@ def detect_language(text: str) -> str:
         return "unknown"
 
 
-def is_english(text: str) -> bool:
+def is_english(text) -> bool:
     """Return True if the text is in English (or too short to tell but Latin)."""
     lang = detect_language(text)
     return lang == "en"
@@ -126,24 +152,25 @@ _LEMMATIZER = None
 def _get_nlp_tools():
     global _STOP_WORDS, _LEMMATIZER
     if not NLTK_AVAILABLE:
-        raise ImportError(
-            "nltk is required for preprocessing. "
-            "Install with: pip install nltk"
-        )
+        return None, None
     if _STOP_WORDS is None:
-        _STOP_WORDS = set(stopwords.words("english"))
+        try:
+            _STOP_WORDS = set(stopwords.words("english"))
+        except Exception:
+            _STOP_WORDS = set()
     if _LEMMATIZER is None:
-        _LEMMATIZER = WordNetLemmatizer()
+        try:
+            _LEMMATIZER = WordNetLemmatizer()
+        except Exception:
+            _LEMMATIZER = None
     return _STOP_WORDS, _LEMMATIZER
 
 
-def clean_text_basic(text: str) -> str:
-    """Basic cleaning: lowercase, remove URLs, mentions, non-ASCII junk.
-
-    Keeps numbers and punctuation at this stage for keyword matching.
-    """
-    if not isinstance(text, str):
-        text = str(text)
+def clean_text_basic(text) -> str:
+    """Basic cleaning: lowercase, remove URLs, mentions, non-ASCII junk."""
+    text = _to_str(text)
+    if not text:
+        return ""
     text = text.lower()
     text = re.sub(r"http\S+|www\.\S+", "", text)   # URLs
     text = re.sub(r"@\w+", "", text)                # mentions
@@ -154,23 +181,46 @@ def clean_text_basic(text: str) -> str:
     return text
 
 
-def preprocess_for_nlp(text: str) -> str:
+def preprocess_for_nlp(text) -> str:
     """NLP preprocessing: tokenise, remove stopwords, lemmatise.
 
-    Keeps tokens of length >= 2 so short but meaningful words
-    (e.g. 'ok', 'no', '5g', 'tv') are preserved.
+    If NLTK is unavailable or fails, falls back to simple split-based
+    processing so we never silently return empty/NaN.
     """
+    text = _to_str(text)
+    if not text:
+        return ""
+
     stop_words, lemmatizer = _get_nlp_tools()
+
     # Strip punctuation
     text_clean = text.translate(str.maketrans("", "", string.punctuation))
     text_clean = re.sub(r"\s+", " ", text_clean).strip()
-    tokens = word_tokenize(text_clean)
-    tokens = [
-        lemmatizer.lemmatize(w)
-        for w in tokens
-        if w not in stop_words and len(w) >= 2
-    ]
-    return " ".join(tokens)
+
+    if not text_clean:
+        return ""
+
+    # Try NLTK tokenisation; fall back to simple split
+    try:
+        tokens = word_tokenize(text_clean)
+    except Exception:
+        tokens = text_clean.split()
+
+    if stop_words is None:
+        stop_words = set()
+
+    processed_tokens = []
+    for w in tokens:
+        if w in stop_words or len(w) < 2:
+            continue
+        if lemmatizer is not None:
+            try:
+                w = lemmatizer.lemmatize(w)
+            except Exception:
+                pass
+        processed_tokens.append(w)
+
+    return " ".join(processed_tokens)
 
 
 # ---------------------------------------------------------------------------
@@ -190,7 +240,7 @@ def run_cleaning_pipeline(
         3. Detect language → **keep only English**, drop the rest
         4. Clean remaining English comments (URLs, mentions, non-ASCII junk)
         5. NLP preprocess (stopwords, lemmatisation)
-        6. Drop comments that are empty after cleaning
+        6. Drop comments that are truly empty after cleaning
 
     Returns a new DataFrame with additional columns:
         - comment_fixed    : encoding-fixed text
@@ -205,19 +255,27 @@ def run_cleaning_pipeline(
         if progress_callback:
             progress_callback(step, frac)
 
+    # 0. Drop rows where the comment is truly empty / NaN
+    _progress("Dropping empty rows", 0.0)
+    out = out[out[comment_col].notna()].copy()
+    out = out[out[comment_col].astype(str).str.strip().ne("")].copy()
+    out = out[~out[comment_col].astype(str).str.strip().str.lower().isin(["nan", "none"])].copy()
+    out = out.reset_index(drop=True)
+    _progress("Dropping empty rows", 1.0)
+
     # 1. Fix encoding
     _progress("Fixing encoding", 0.0)
-    out["comment_fixed"] = out[comment_col].apply(fix_encoding)
+    out["comment_fixed"] = out[comment_col].apply(fix_encoding).fillna("")
     _progress("Fixing encoding", 1.0)
 
     # 2. Remove emojis
     _progress("Removing emojis", 0.0)
-    out["comment_no_emoji"] = out["comment_fixed"].apply(remove_emojis)
+    out["comment_no_emoji"] = out["comment_fixed"].apply(remove_emojis).fillna("")
     _progress("Removing emojis", 1.0)
 
     # 3. Detect language
     _progress("Detecting languages", 0.0)
-    out["detected_lang"] = out["comment_no_emoji"].apply(detect_language)
+    out["detected_lang"] = out["comment_no_emoji"].apply(detect_language).fillna("unknown")
     _progress("Detecting languages", 1.0)
 
     # 4. Keep only English comments
@@ -229,17 +287,25 @@ def run_cleaning_pipeline(
 
     # 5. Basic text cleaning
     _progress("Cleaning text", 0.0)
-    out["comment_clean"] = out["comment_no_emoji"].apply(clean_text_basic)
+    out["comment_clean"] = out["comment_no_emoji"].apply(clean_text_basic).fillna("")
     _progress("Cleaning text", 1.0)
 
     # 6. NLP preprocessing
     _progress("NLP preprocessing", 0.0)
-    out["comment_processed"] = out["comment_clean"].apply(preprocess_for_nlp)
+    out["comment_processed"] = out["comment_clean"].apply(preprocess_for_nlp).fillna("")
     _progress("NLP preprocessing", 1.0)
 
-    # 7. Drop rows where cleaning left nothing
+    # 7. Fallback: if NLP processing emptied a comment but clean text has
+    #    content, keep the clean text so we don't lose valid data.
+    fallback_mask = (out["comment_processed"].str.strip() == "") & (out["comment_clean"].str.strip() != "")
+    out.loc[fallback_mask, "comment_processed"] = out.loc[fallback_mask, "comment_clean"]
+
+    # 8. Drop rows where both clean and processed are truly empty
+    empty_mask = (
+        out["comment_processed"].isna()
+        | (out["comment_processed"].str.strip() == "")
+    )
     n_before2 = len(out)
-    empty_mask = out["comment_processed"].str.strip() == ""
     out = out[~empty_mask].reset_index(drop=True)
     n_dropped_empty = n_before2 - len(out)
 
@@ -251,10 +317,6 @@ def cleaning_report(original_df: pd.DataFrame, cleaned_df: pd.DataFrame) -> dict
     """Produce a summary report of what the cleaning pipeline did."""
     original_count = len(original_df)
     cleaned_count = len(cleaned_df)
-    lang_dist = (
-        cleaned_df["detected_lang"].value_counts().to_dict()
-        if "detected_lang" in cleaned_df.columns else {}
-    )
     return {
         "original_count": original_count,
         "cleaned_count": cleaned_count,
