@@ -12,7 +12,7 @@ import seaborn as sns
 from pipeline.data_loader import load_comments, dataset_summary
 from pipeline.data_cleaner import (
     run_cleaning_pipeline, cleaning_report,
-    FTFY_AVAILABLE, LANGDETECT_AVAILABLE, TRANSLATOR_AVAILABLE, EMOJI_AVAILABLE,
+    FTFY_AVAILABLE, LANGDETECT_AVAILABLE, EMOJI_AVAILABLE,
 )
 
 
@@ -20,16 +20,16 @@ def render_tab(uploaded_file=None):
     st.header("Data Pipeline & Overview")
     st.markdown(
         "Load the YouTube comments dataset, inspect raw data, "
-        "and run the full cleaning pipeline."
+        "and run the full cleaning pipeline.  "
+        "**Non-English comments are dropped; English comments are cleaned.**"
     )
 
     # --- Dependency check ---
     with st.expander("Library availability"):
-        cols = st.columns(4)
+        cols = st.columns(3)
         cols[0].metric("ftfy (encoding)", "Yes" if FTFY_AVAILABLE else "No")
         cols[1].metric("langdetect", "Yes" if LANGDETECT_AVAILABLE else "No")
-        cols[2].metric("deep-translator", "Yes" if TRANSLATOR_AVAILABLE else "No")
-        cols[3].metric("emoji", "Yes" if EMOJI_AVAILABLE else "No")
+        cols[2].metric("emoji", "Yes" if EMOJI_AVAILABLE else "No")
 
     # --- Load data ---
     st.subheader("1. Load Dataset")
@@ -81,10 +81,11 @@ def render_tab(uploaded_file=None):
 
     # --- Cleaning Pipeline ---
     st.subheader("3. Run Cleaning Pipeline")
-
-    col1, col2 = st.columns(2)
-    translate = col1.checkbox("Translate non-English comments", value=True)
-    min_tokens = col2.slider("Min tokens after preprocessing", 1, 10, 3)
+    st.info(
+        "Pipeline: fix encoding -> remove emojis -> "
+        "detect language -> **keep English only** -> "
+        "clean text -> NLP preprocessing"
+    )
 
     if st.button("Run Cleaning Pipeline", type="primary"):
         progress_bar = st.progress(0, text="Starting pipeline...")
@@ -97,8 +98,6 @@ def render_tab(uploaded_file=None):
         with st.spinner("Running cleaning pipeline..."):
             cleaned_df = run_cleaning_pipeline(
                 raw_df,
-                translate=translate,
-                min_token_length=min_tokens,
                 progress_callback=_cb,
             )
 
@@ -123,33 +122,12 @@ def render_tab(uploaded_file=None):
         col3.metric("Removed", f"{report['removed_count']:,} ({report['removal_pct']}%)")
         col4.metric("Avg tokens", report["avg_tokens_after"])
 
-        if report.get("english_pct") is not None:
-            st.metric("Originally English", f"{report['english_pct']}%")
-
-        # Language distribution
-        if report.get("language_distribution"):
-            st.subheader("Detected Languages")
-            lang_df = pd.DataFrame(
-                list(report["language_distribution"].items()),
-                columns=["Language", "Count"],
-            ).sort_values("Count", ascending=False)
-
-            fig, ax = plt.subplots(figsize=(10, 4))
-            top_langs = lang_df.head(15)
-            ax.barh(top_langs["Language"], top_langs["Count"], color="steelblue")
-            ax.set_xlabel("Count")
-            ax.set_title("Detected Language Distribution (top 15)")
-            ax.invert_yaxis()
-            plt.tight_layout()
-            st.pyplot(fig)
-            plt.close()
-
         # Brand distribution after cleaning
         st.subheader("Brand Distribution (cleaned)")
         fig, ax = plt.subplots(figsize=(8, 4))
         brand_counts = cleaned_df["Brand"].value_counts()
         brand_counts.plot(kind="bar", ax=ax, color=sns.color_palette("Set2", len(brand_counts)))
-        ax.set_title("Comments per Brand (after cleaning)")
+        ax.set_title("Comments per Brand (English only, after cleaning)")
         ax.set_ylabel("Count")
         plt.xticks(rotation=0)
         plt.tight_layout()
@@ -157,6 +135,6 @@ def render_tab(uploaded_file=None):
         plt.close()
 
         with st.expander("Sample cleaned comments"):
-            display_cols = ["Brand", "Comment", "comment_english", "comment_processed", "detected_lang"]
+            display_cols = ["Brand", "Comment", "comment_clean", "comment_processed"]
             available = [c for c in display_cols if c in cleaned_df.columns]
             st.dataframe(cleaned_df[available].head(30), use_container_width=True)
