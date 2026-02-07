@@ -13,18 +13,39 @@ Usage:
     streamlit run app.py
 """
 
+import sys
+import os
+from pathlib import Path
+
+# Ensure the project root is on sys.path so that `config`, `pipeline`, `tabs`
+# packages are importable regardless of the working directory.
+_PROJECT_ROOT = str(Path(__file__).resolve().parent)
+if _PROJECT_ROOT not in sys.path:
+    sys.path.insert(0, _PROJECT_ROOT)
+
 import streamlit as st
-import nltk
 import warnings
 warnings.filterwarnings("ignore")
 
+try:
+    import nltk
+    NLTK_AVAILABLE = True
+except ImportError:
+    NLTK_AVAILABLE = False
+
 # Ensure NLTK data is available
-for resource in ["stopwords", "punkt", "punkt_tab", "wordnet", "vader_lexicon",
-                  "averaged_perceptron_tagger", "averaged_perceptron_tagger_eng"]:
-    try:
-        nltk.data.find(f"tokenizers/{resource}" if "punkt" in resource else f"corpora/{resource}" if resource in ("stopwords", "wordnet") else f"sentiment/{resource}" if "vader" in resource else f"taggers/{resource}")
-    except LookupError:
-        nltk.download(resource, quiet=True)
+if NLTK_AVAILABLE:
+    for resource in ["stopwords", "punkt", "punkt_tab", "wordnet", "vader_lexicon",
+                      "averaged_perceptron_tagger", "averaged_perceptron_tagger_eng"]:
+        try:
+            nltk.data.find(
+                f"tokenizers/{resource}" if "punkt" in resource
+                else f"corpora/{resource}" if resource in ("stopwords", "wordnet")
+                else f"sentiment/{resource}" if "vader" in resource
+                else f"taggers/{resource}"
+            )
+        except LookupError:
+            nltk.download(resource, quiet=True)
 
 # --- Page config ---
 st.set_page_config(
