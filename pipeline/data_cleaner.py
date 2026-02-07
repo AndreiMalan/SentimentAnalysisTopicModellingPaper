@@ -66,34 +66,34 @@ def fix_encoding(text: str) -> str:
 # Step 2: Remove / normalise emojis
 # ---------------------------------------------------------------------------
 
-_EMOJI_PATTERN = re.compile(
-    "["
-    "\U0001F600-\U0001F64F"  # emoticons
-    "\U0001F300-\U0001F5FF"  # symbols & pictographs
-    "\U0001F680-\U0001F6FF"  # transport & map symbols
-    "\U0001F1E0-\U0001F1FF"  # flags
-    "\U00002702-\U000027B0"
-    "\U000024C2-\U0001F251"
-    "\U0001f926-\U0001f937"
-    "\U00010000-\U0010ffff"
-    "\u2640-\u2642"
-    "\u2600-\u2B55"
-    "\u200d"
-    "\u23cf"
-    "\u23e9"
-    "\u231a"
-    "\ufe0f"
-    "\u3030"
-    "]+",
-    flags=re.UNICODE,
-)
-
-
 def remove_emojis(text: str) -> str:
-    """Remove emoji characters from text."""
+    """Remove emoji characters from text.
+
+    Uses the ``emoji`` library which has a curated list of actual emoji
+    code-points.  A manual regex fallback is provided for when the library
+    is not installed, but it is intentionally narrow to avoid accidentally
+    stripping CJK, Korean, Arabic, or other legitimate scripts.
+    """
     if EMOJI_AVAILABLE:
         text = emoji.replace_emoji(text, replace="")
-    text = _EMOJI_PATTERN.sub("", text)
+    else:
+        # Narrow fallback: only the most common emoji blocks, nothing that
+        # overlaps CJK / Hangul / Arabic / Devanagari.
+        _fallback = re.compile(
+            "["
+            "\U0001F600-\U0001F64F"  # emoticons
+            "\U0001F300-\U0001F5FF"  # symbols & pictographs
+            "\U0001F680-\U0001F6FF"  # transport & map
+            "\U0001F1E0-\U0001F1FF"  # flags
+            "\U0001F900-\U0001F9FF"  # supplemental symbols
+            "\U0001FA00-\U0001FA6F"  # chess symbols
+            "\U0001FA70-\U0001FAFF"  # symbols extended-A
+            "\u200d"                 # zero-width joiner
+            "\ufe0f"                 # variation selector
+            "]+",
+            flags=re.UNICODE,
+        )
+        text = _fallback.sub("", text)
     return text.strip()
 
 
@@ -205,10 +205,15 @@ def preprocess_for_nlp(text: str) -> str:
 # Full Pipeline
 # ---------------------------------------------------------------------------
 
-def _is_empty_after_clean(text: str) -> bool:
-    """Return True if text has no usable alphabetic content at all."""
-    alpha = re.sub(r"[^a-zA-Z]", "", str(text))
-    return len(alpha) == 0
+def _is_truly_empty(text: str) -> bool:
+    """Return True only if the text has no meaningful content at all.
+
+    Checks for ANY Unicode letter (Latin, Cyrillic, Devanagari, CJK, Arabic,
+    etc.) — not just a-zA-Z.  A comment in Hindi or Chinese is NOT empty.
+    """
+    # \w matches [a-zA-Z0-9_] plus Unicode letters/digits
+    # We check for at least one Unicode letter category character
+    return not bool(re.search(r"[^\W\d_]", str(text), re.UNICODE))
 
 
 def run_cleaning_pipeline(
@@ -263,14 +268,23 @@ def run_cleaning_pipeline(
     out["comment_no_emoji"] = out["comment_fixed"].apply(remove_emojis)
     _progress("Removing emojis", 1.0)
 
-    # 3. Language detection (run on the emoji-cleaned text)
+    # 3. THE ONLY HARD DROP — remove rows that have no Unicode letter in
+    #    ANY script (Latin, Cyrillic, Devanagari, CJK, Arabic …) after
+    #    encoding fix + emoji removal.  These are truly unrecoverable
+    #    (pure emoji strings, bare punctuation, empty strings).
+    _progress("Removing empty rows", 0.0)
+    empty_mask = out["comment_no_emoji"].apply(_is_truly_empty)
+    out = out[~empty_mask].reset_index(drop=True)
+    _progress("Removing empty rows", 1.0)
+
+    # 4. Language detection
     _progress("Detecting languages", 0.0)
     out["detected_lang"] = out["comment_no_emoji"].apply(detect_language)
     _progress("Detecting languages", 1.0)
 
     out["is_english"] = out["detected_lang"] == "en"
 
-    # 4. Translation – translate non-English comments; keep originals on failure
+    # 5. Translation — translate non-English comments; keep originals on failure
     if translate and TRANSLATOR_AVAILABLE:
         _progress("Translating non-English comments", 0.0)
         non_en_mask = ~out["is_english"]
@@ -291,26 +305,23 @@ def run_cleaning_pipeline(
         out["comment_english"] = out["comment_no_emoji"]
     _progress("Translating non-English comments", 1.0)
 
-    # 5. Basic text cleaning (keeps numbers and meaningful short words)
+    # 6. Basic text cleaning (keeps numbers and meaningful short words)
     _progress("Cleaning text", 0.0)
     out["comment_clean"] = out["comment_english"].apply(clean_text_basic)
     _progress("Cleaning text", 1.0)
 
-    # 6. NLP preprocessing
+    # 7. NLP preprocessing
     _progress("NLP preprocessing", 0.0)
     out["comment_processed"] = out["comment_clean"].apply(preprocess_for_nlp)
     _progress("NLP preprocessing", 1.0)
 
-    # 7. Only drop rows that are truly empty – no alphabetic content left
-    #    at all after the full pipeline (emoji-only, gibberish, etc.)
-    empty_mask = out["comment_processed"].apply(_is_empty_after_clean)
-    out = out[~empty_mask].reset_index(drop=True)
-
-    # Also honour the min_token_length parameter (default 1 = keep everything
-    # that has at least one token)
-    if min_token_length > 0:
-        token_counts = out["comment_processed"].str.split().str.len().fillna(0)
-        out = out[token_counts >= min_token_length].reset_index(drop=True)
+    # 8. If NLP preprocessing emptied a comment (e.g. non-Latin text that
+    #    the English lemmatizer couldn't handle, or all-stopword comments),
+    #    fall back to comment_clean so the row is NOT lost.
+    fallback_mask = out["comment_processed"].str.strip() == ""
+    out.loc[fallback_mask, "comment_processed"] = out.loc[
+        fallback_mask, "comment_clean"
+    ]
 
     _progress("Done", 1.0)
     return out
