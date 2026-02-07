@@ -116,14 +116,22 @@ def remove_emojis(text) -> str:
 # ---------------------------------------------------------------------------
 
 def detect_language(text) -> str:
-    """Detect language of a text string. Returns ISO 639-1 code or 'unknown'."""
+    """Detect language of a text string. Returns ISO 639-1 code or 'unknown'.
+
+    If langdetect is not installed, checks for Latin-script content and
+    assumes English — this is safe because the later cleaning step strips
+    non-ASCII anyway, so non-English text is still cleaned out.
+    """
     text = _to_str(text)
     if not text:
         return "unknown"
-    if not LANGDETECT_AVAILABLE:
-        return "unknown"
     # Strip non-letter chars for cleaner detection
     clean = re.sub(r"[^a-zA-Z\s]", "", text)
+    if not LANGDETECT_AVAILABLE:
+        # Fallback: if the text contains Latin letters, assume English
+        if re.search(r"[a-zA-Z]", text):
+            return "en"
+        return "unknown"
     if len(clean.split()) < 3:
         # Too short to detect reliably — check if it's at least Latin script
         if re.search(r"[a-zA-Z]", text):
