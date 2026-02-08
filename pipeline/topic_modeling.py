@@ -399,7 +399,7 @@ class ZeroShotClassifier:
                     "method": "Zero-Shot",
                 })
             if progress_callback and i % 10 == 0:
-                progress_callback(i / total)
+                progress_callback("Zero-Shot", i / total)
         return pd.DataFrame(rows)
 
 
