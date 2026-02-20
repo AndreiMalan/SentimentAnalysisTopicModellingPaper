@@ -1,25 +1,30 @@
 """
 Topic Modeling Module
 =====================
-Multiple algorithms for classifying YouTube comments into literature-based
-constructs (topics).  All methods return a standardised DataFrame with columns:
-    text, brand, assigned_topic, confidence, method
+Three algorithms for classifying YouTube comments into topics:
 
-Algorithms implemented:
-1. Keyword-based classification (inclusion/exclusion from literature)
-2. LDA (Latent Dirichlet Allocation)
-3. NMF (Non-negative Matrix Factorisation)
-4. Seeded / Guided LDA
-5. BERTopic (transformer-based)
-6. Zero-Shot Classification (facebook/bart-large-mnli)
+1. LDA  — Fully **unsupervised**.  Discovers topics on its own.
+   Tests k = k_min … k_max, evaluates each with perplexity, coherence
+   (UMass), and log-likelihood.  Selects optimal k automatically.
+   Produces LDAvis-style word lists per topic.
+
+2. Seeded LDA  — **Semi-supervised**.  Guided by literature-construct
+   seed words.  Maps discovered topics to the 7 predefined constructs.
+
+3. BERTopic  — **Transformer-based**, semi-supervised.  Semantic
+   clustering with seed topic guidance, mapped to constructs.
+
+All predict() methods return a standardised DataFrame with columns:
+    text, brand, assigned_topic, confidence, method
 """
 
 import re
+import sys
 import numpy as np
 import pandas as pd
 from typing import Dict, List, Tuple
 from sklearn.feature_extraction.text import CountVectorizer, TfidfVectorizer
-from sklearn.decomposition import LatentDirichletAllocation, NMF
+from sklearn.decomposition import LatentDirichletAllocation
 
 from config.constructs import CONSTRUCTS, CONSTRUCT_NAMES, RANDOM_STATE
 
@@ -31,204 +36,264 @@ try:
 except ImportError:
     BERTOPIC_AVAILABLE = False
 
-try:
-    from transformers import pipeline as hf_pipeline
-    import torch
-    TRANSFORMERS_AVAILABLE = True
-except ImportError:
-    TRANSFORMERS_AVAILABLE = False
+
+# ========================================================================
+# HELPERS — COHERENCE METRICS
+# ========================================================================
+
+def _coherence_umass(model, dtm, n_top_words=10):
+    """UMass coherence (Mimno et al., 2011).
+
+    C_UMass = (2 / T(T-1)) * Σ_{i<j} log( (D(w_i, w_j) + 1) / D(w_i) )
+
+    Values are negative; closer to 0 is better.
+    """
+    dtm_bin = (dtm > 0).astype(int)
+    scores = []
+    for k in range(model.n_components):
+        top_ids = model.components_[k].argsort()[-n_top_words:][::-1]
+        topic_score = 0.0
+        n_pairs = 0
+        for i in range(1, len(top_ids)):
+            for j in range(i):
+                wi, wj = top_ids[i], top_ids[j]
+                d_wj = int(dtm_bin[:, wj].sum())
+                d_wi_wj = int(dtm_bin[:, wi].multiply(dtm_bin[:, wj]).sum())
+                if d_wj > 0:
+                    topic_score += np.log((d_wi_wj + 1) / d_wj)
+                n_pairs += 1
+        if n_pairs > 0:
+            scores.append(topic_score / n_pairs)
+    return float(np.mean(scores)) if scores else 0.0
+
+
+def _coherence_npmi(model, dtm, n_top_words=10):
+    """NPMI coherence (Bouma, 2009).
+
+    NPMI(w_i, w_j) = ( log P(w_i,w_j)/(P(w_i)P(w_j)) ) / ( -log P(w_i,w_j) )
+    Normalised to [-1, 1].  Higher is better.
+    """
+    n_docs = dtm.shape[0]
+    dtm_bin = (dtm > 0).astype(int)
+    scores = []
+    for k in range(model.n_components):
+        top_ids = model.components_[k].argsort()[-n_top_words:][::-1]
+        topic_score = 0.0
+        n_pairs = 0
+        for i in range(1, len(top_ids)):
+            for j in range(i):
+                wi, wj = top_ids[i], top_ids[j]
+                p_wi = int(dtm_bin[:, wi].sum()) / n_docs
+                p_wj = int(dtm_bin[:, wj].sum()) / n_docs
+                p_wi_wj = int(dtm_bin[:, wi].multiply(dtm_bin[:, wj]).sum()) / n_docs
+                if p_wi_wj > 0 and p_wi > 0 and p_wj > 0:
+                    pmi = np.log(p_wi_wj / (p_wi * p_wj))
+                    npmi = pmi / (-np.log(p_wi_wj))
+                    topic_score += npmi
+                else:
+                    topic_score += -1.0
+                n_pairs += 1
+        if n_pairs > 0:
+            scores.append(topic_score / n_pairs)
+    return float(np.mean(scores)) if scores else 0.0
+
+
+def _topic_diversity(model, vectorizer, n_top_words=25):
+    """Proportion of unique words across all topics' top-N (Dieng et al., 2020)."""
+    feat = vectorizer.get_feature_names_out()
+    all_words = []
+    for k in range(model.n_components):
+        top_ids = model.components_[k].argsort()[-n_top_words:][::-1]
+        all_words.extend([feat[i] for i in top_ids])
+    return len(set(all_words)) / len(all_words) if all_words else 0.0
 
 
 # ========================================================================
-# 1. KEYWORD-BASED CLASSIFICATION
-# ========================================================================
-
-class KeywordClassifier:
-    """Classify comments using inclusion/exclusion keywords from literature
-    constructs.  Fast, fully interpretable, no training needed."""
-
-    def __init__(self, constructs: Dict = None):
-        self.constructs = constructs or CONSTRUCTS
-
-    def _score_text(self, text: str) -> Dict[str, float]:
-        text_lower = text.lower()
-        scores: Dict[str, float] = {}
-        for name, info in self.constructs.items():
-            inclusion = info["inclusion_keywords"]
-            exclusion = info.get("exclusion_keywords", [])
-
-            inc_hits = sum(1 for kw in inclusion if kw.lower() in text_lower)
-
-            # Penalise exclusion matches
-            exc_hits = sum(1 for kw in exclusion if kw.lower() in text_lower)
-
-            raw = inc_hits - 0.5 * exc_hits
-            scores[name] = max(0.0, raw / max(len(inclusion), 1))
-        return scores
-
-    def classify(self, texts: List[str], brands: List[str] = None) -> pd.DataFrame:
-        rows = []
-        for i, text in enumerate(texts):
-            scores = self._score_text(text)
-            best = max(scores, key=scores.get)
-            conf = scores[best]
-            rows.append({
-                "text": text,
-                "brand": brands[i] if brands else None,
-                "assigned_topic": best if conf > 0 else "Unclassified",
-                "confidence": conf,
-                "method": "Keyword",
-                **{f"score_{k}": v for k, v in scores.items()},
-            })
-        return pd.DataFrame(rows)
-
-
-# ========================================================================
-# 2. LDA
+# 1. LDA — FULLY UNSUPERVISED
 # ========================================================================
 
 class LDATopicModel:
-    """Standard Latent Dirichlet Allocation."""
+    """Unsupervised LDA with automatic k-selection.
 
-    def __init__(self, n_topics: int = 7, max_features: int = 2000):
-        self.n_topics = n_topics
+    Trains one model per k in [k_min, k_max] and evaluates each with
+    perplexity, UMass coherence, NPMI coherence, log-likelihood, and
+    topic diversity.  Selects the k with the best coherence score.
+    """
+
+    def __init__(self, k_min=4, k_max=15, max_features=2000, n_top_words=20):
+        self.k_min = k_min
+        self.k_max = k_max
         self.max_features = max_features
-        self.vectorizer = None
-        self.model = None
-        self.topic_mapping: Dict[int, str] = {}
-        self.topic_words: Dict[str, List[str]] = {}
+        self.n_top_words = n_top_words
 
-    def fit(self, texts: List[str]):
+        # Fitted state
+        self.vectorizer = None
+        self.dtm = None
+        self.models: Dict[int, LatentDirichletAllocation] = {}
+        self.perplexity_scores: Dict[int, float] = {}
+        self.coherence_umass: Dict[int, float] = {}
+        self.coherence_npmi: Dict[int, float] = {}
+        self.log_likelihood: Dict[int, float] = {}
+        self.diversity_scores: Dict[int, float] = {}
+        self.optimal_k: int = None
+        self.best_model = None
+        self.topic_words: Dict[str, List[Tuple[str, float]]] = {}
+        self.topic_proportions: np.ndarray = None
+        self.overall_diversity: float = None
+
+    # ----- fitting -----
+    def fit(self, texts: List[str], progress_callback=None):
         self.vectorizer = CountVectorizer(
-            max_features=self.max_features, max_df=0.95, min_df=2, stop_words="english"
+            max_features=self.max_features, max_df=0.95, min_df=2,
+            stop_words="english",
         )
-        dtm = self.vectorizer.fit_transform(texts)
-        self.model = LatentDirichletAllocation(
-            n_components=self.n_topics, random_state=RANDOM_STATE,
-            max_iter=30, learning_method="online", n_jobs=-1,
-        )
-        self.model.fit(dtm)
-        self._map_topics()
+        self.dtm = self.vectorizer.fit_transform(texts)
+
+        k_values = list(range(self.k_min, self.k_max + 1))
+        for idx, k in enumerate(k_values):
+            if progress_callback:
+                progress_callback("LDA", idx / len(k_values))
+
+            model = LatentDirichletAllocation(
+                n_components=k, random_state=RANDOM_STATE,
+                max_iter=30, learning_method="online", n_jobs=-1,
+            )
+            model.fit(self.dtm)
+
+            self.models[k] = model
+            self.perplexity_scores[k] = model.perplexity(self.dtm)
+            self.log_likelihood[k] = model.score(self.dtm)
+            self.coherence_umass[k] = _coherence_umass(model, self.dtm)
+            self.coherence_npmi[k] = _coherence_npmi(model, self.dtm)
+            self.diversity_scores[k] = _topic_diversity(model, self.vectorizer)
+
+        # Optimal k = highest UMass coherence (closest to 0)
+        self.optimal_k = max(self.coherence_umass, key=self.coherence_umass.get)
+        self.best_model = self.models[self.optimal_k]
+
+        self._extract_topic_info()
+        self._print_report()
         return self
 
-    def _map_topics(self, n_top: int = 20):
+    # ----- topic extraction -----
+    def _extract_topic_info(self):
         feat = self.vectorizer.get_feature_names_out()
-        for idx in range(self.n_topics):
-            top_ids = self.model.components_[idx].argsort()[-n_top:][::-1]
-            words = [feat[i] for i in top_ids]
-            self.topic_words[f"LDA_Topic_{idx}"] = words
+        model = self.best_model
+        # Normalise to probability distributions
+        tw_dist = model.components_ / model.components_.sum(axis=1, keepdims=True)
 
-            best_name, best_overlap = "Unclassified", 0
-            word_set = set(words)
-            for cname, cinfo in CONSTRUCTS.items():
-                kw_set = {k.lower() for k in cinfo["inclusion_keywords"]}
-                overlap = len(word_set & kw_set)
-                if overlap > best_overlap:
-                    best_overlap = overlap
-                    best_name = cname
-            self.topic_mapping[idx] = best_name
+        self.topic_words = {}
+        for k in range(model.n_components):
+            top_ids = tw_dist[k].argsort()[-self.n_top_words:][::-1]
+            self.topic_words[f"Topic {k + 1}"] = [
+                (feat[i], float(tw_dist[k, i])) for i in top_ids
+            ]
 
+        doc_topics = model.transform(self.dtm)
+        self.topic_proportions = doc_topics.mean(axis=0)
+        self.overall_diversity = _topic_diversity(model, self.vectorizer)
+
+    # ----- prediction -----
     def predict(self, texts: List[str], brands: List[str] = None) -> pd.DataFrame:
         dtm = self.vectorizer.transform(texts)
-        doc_topics = self.model.transform(dtm)
+        doc_topics = self.best_model.transform(dtm)
         rows = []
         for i, dist in enumerate(doc_topics):
             top_idx = int(np.argmax(dist))
             rows.append({
                 "text": texts[i],
                 "brand": brands[i] if brands else None,
-                "assigned_topic": self.topic_mapping.get(top_idx, "Unclassified"),
+                "assigned_topic": f"Topic {top_idx + 1}",
                 "confidence": float(dist[top_idx]),
                 "method": "LDA",
                 "lda_topic_id": top_idx,
             })
         return pd.DataFrame(rows)
 
-
-# ========================================================================
-# 3. NMF
-# ========================================================================
-
-class NMFTopicModel:
-    """Non-negative Matrix Factorisation topic model."""
-
-    def __init__(self, n_topics: int = 7, max_features: int = 2000):
-        self.n_topics = n_topics
-        self.max_features = max_features
-        self.vectorizer = None
-        self.model = None
-        self.topic_mapping: Dict[int, str] = {}
-        self.topic_words: Dict[str, List[str]] = {}
-
-    def fit(self, texts: List[str]):
-        self.vectorizer = TfidfVectorizer(
-            max_features=self.max_features, max_df=0.95, min_df=2, stop_words="english"
-        )
-        dtm = self.vectorizer.fit_transform(texts)
-        self.model = NMF(
-            n_components=self.n_topics, random_state=RANDOM_STATE,
-            init="nndsvda", max_iter=400,
-        )
-        self.model.fit(dtm)
-        self._map_topics()
-        return self
-
-    def _map_topics(self, n_top: int = 20):
-        feat = self.vectorizer.get_feature_names_out()
-        for idx in range(self.n_topics):
-            top_ids = self.model.components_[idx].argsort()[-n_top:][::-1]
-            words = [feat[i] for i in top_ids]
-            self.topic_words[f"NMF_Topic_{idx}"] = words
-
-            best_name, best_overlap = "Unclassified", 0
-            word_set = set(words)
-            for cname, cinfo in CONSTRUCTS.items():
-                kw_set = {k.lower() for k in cinfo["inclusion_keywords"]}
-                overlap = len(word_set & kw_set)
-                if overlap > best_overlap:
-                    best_overlap = overlap
-                    best_name = cname
-            self.topic_mapping[idx] = best_name
-
-    def predict(self, texts: List[str], brands: List[str] = None) -> pd.DataFrame:
-        dtm = self.vectorizer.transform(texts)
-        doc_topics = self.model.transform(dtm)
+    # ----- k-selection table -----
+    def get_k_metrics_df(self) -> pd.DataFrame:
         rows = []
-        for i, dist in enumerate(doc_topics):
-            top_idx = int(np.argmax(dist))
-            norm = dist / (dist.sum() + 1e-10)
+        for k in sorted(self.perplexity_scores.keys()):
             rows.append({
-                "text": texts[i],
-                "brand": brands[i] if brands else None,
-                "assigned_topic": self.topic_mapping.get(top_idx, "Unclassified"),
-                "confidence": float(norm[top_idx]),
-                "method": "NMF",
-                "nmf_topic_id": top_idx,
+                "k": k,
+                "Perplexity": round(self.perplexity_scores[k], 2),
+                "Coherence (UMass)": round(self.coherence_umass[k], 4),
+                "Coherence (NPMI)": round(self.coherence_npmi[k], 4),
+                "Log-Likelihood": round(self.log_likelihood[k], 2),
+                "Topic Diversity": round(self.diversity_scores[k], 4),
             })
-        return pd.DataFrame(rows)
+        df = pd.DataFrame(rows)
+        return df
+
+    # ----- console report -----
+    def _print_report(self):
+        sep = "=" * 90
+        print(f"\n{sep}")
+        print("LDA TOPIC MODEL — DETAILED METRICS REPORT")
+        print(sep)
+        print(f"K range tested           : {self.k_min} – {self.k_max}")
+        print(f"Optimal k (best UMass)   : {self.optimal_k}")
+        print(f"Vocabulary size          : {len(self.vectorizer.get_feature_names_out())}")
+        print(f"Documents                : {self.dtm.shape[0]}")
+
+        print(f"\n{'k':>4} | {'Perplexity':>12} | {'C_UMass':>10} | {'C_NPMI':>10} | {'Log-Lik':>14} | {'Diversity':>10}")
+        print("-" * 72)
+        for k in sorted(self.perplexity_scores.keys()):
+            mark = " <-- best" if k == self.optimal_k else ""
+            print(
+                f"{k:>4d} | "
+                f"{self.perplexity_scores[k]:>12.2f} | "
+                f"{self.coherence_umass[k]:>10.4f} | "
+                f"{self.coherence_npmi[k]:>10.4f} | "
+                f"{self.log_likelihood[k]:>14.2f} | "
+                f"{self.diversity_scores[k]:>10.4f}{mark}"
+            )
+
+        print(f"\n--- Discovered Topics (k = {self.optimal_k}) ---")
+        for topic_name, words_weights in self.topic_words.items():
+            idx = int(topic_name.split()[-1]) - 1
+            prop = self.topic_proportions[idx]
+            print(f"\n  {topic_name}  (proportion = {prop:.4f})")
+            for word, weight in words_weights[:15]:
+                bar = "█" * max(1, int(weight * 1500))
+                print(f"    {word:20s} {weight:.6f}  {bar}")
+
+        print(f"\n  Topic Diversity (top-25) : {self.overall_diversity:.4f}")
+        print(f"  Best Coherence (UMass)  : {self.coherence_umass[self.optimal_k]:.4f}")
+        print(f"  Best Coherence (NPMI)   : {self.coherence_npmi[self.optimal_k]:.4f}")
+        print(f"  Perplexity @ optimal k  : {self.perplexity_scores[self.optimal_k]:.2f}")
+        print(f"{sep}\n")
+        sys.stdout.flush()
 
 
 # ========================================================================
-# 4. SEEDED / GUIDED LDA
+# 2. SEEDED / GUIDED LDA  (semi-supervised)
 # ========================================================================
 
 class SeededLDA:
     """LDA with seed-word boosting from the literature constructs."""
 
-    def __init__(self, n_topics: int = 7, max_features: int = 2000, boost_factor: float = 5.0):
+    def __init__(self, n_topics: int = 7, max_features: int = 2000,
+                 boost_factor: float = 5.0):
         self.n_topics = n_topics
         self.max_features = max_features
         self.boost_factor = boost_factor
         self.vectorizer = None
         self.model = None
+        self.dtm = None
         self.topic_names: List[str] = []
-        self.topic_words: Dict[str, List[str]] = {}
+        self.topic_words: Dict[str, List[Tuple[str, float]]] = {}
+        self.perplexity: float = None
+        self.coherence_umass_val: float = None
+        self.coherence_npmi_val: float = None
+        self.topic_diversity_val: float = None
 
     def fit(self, texts: List[str]):
         self.vectorizer = CountVectorizer(
-            max_features=self.max_features, max_df=0.95, min_df=2, stop_words="english"
+            max_features=self.max_features, max_df=0.95, min_df=2,
+            stop_words="english",
         )
-        dtm = self.vectorizer.fit_transform(texts)
+        self.dtm = self.vectorizer.fit_transform(texts)
         feat = self.vectorizer.get_feature_names_out()
         word2idx = {w: i for i, w in enumerate(feat)}
 
@@ -236,8 +301,9 @@ class SeededLDA:
             n_components=self.n_topics, random_state=RANDOM_STATE,
             max_iter=50, learning_method="batch", n_jobs=-1,
         )
-        self.model.fit(dtm)
+        self.model.fit(self.dtm)
 
+        # Boost seed words
         self.topic_names = list(CONSTRUCTS.keys())[:self.n_topics]
         for t_idx, cname in enumerate(self.topic_names):
             if t_idx >= self.n_topics:
@@ -247,16 +313,24 @@ class SeededLDA:
                 if kw_lower in word2idx:
                     self.model.components_[t_idx, word2idx[kw_lower]] *= self.boost_factor
 
-        # Renormalise
         self.model.components_ /= self.model.components_.sum(axis=1, keepdims=True)
 
-        # Extract top words
+        # Topic words with weights
+        tw_dist = self.model.components_ / self.model.components_.sum(axis=1, keepdims=True)
         for t_idx in range(self.n_topics):
-            top_ids = self.model.components_[t_idx].argsort()[-15:][::-1]
-            words = [feat[i] for i in top_ids]
+            top_ids = tw_dist[t_idx].argsort()[-20:][::-1]
             name = self.topic_names[t_idx] if t_idx < len(self.topic_names) else f"Topic_{t_idx}"
-            self.topic_words[name] = words
+            self.topic_words[name] = [
+                (feat[i], float(tw_dist[t_idx, i])) for i in top_ids
+            ]
 
+        # Metrics
+        self.perplexity = self.model.perplexity(self.dtm)
+        self.coherence_umass_val = _coherence_umass(self.model, self.dtm)
+        self.coherence_npmi_val = _coherence_npmi(self.model, self.dtm)
+        self.topic_diversity_val = _topic_diversity(self.model, self.vectorizer)
+
+        self._print_report()
         return self
 
     def predict(self, texts: List[str], brands: List[str] = None) -> pd.DataFrame:
@@ -275,9 +349,28 @@ class SeededLDA:
             })
         return pd.DataFrame(rows)
 
+    def _print_report(self):
+        sep = "=" * 90
+        print(f"\n{sep}")
+        print("SEEDED LDA — METRICS REPORT")
+        print(sep)
+        print(f"  Number of topics (constructs) : {self.n_topics}")
+        print(f"  Boost factor                  : {self.boost_factor}")
+        print(f"  Perplexity                    : {self.perplexity:.2f}")
+        print(f"  Coherence (UMass)             : {self.coherence_umass_val:.4f}")
+        print(f"  Coherence (NPMI)              : {self.coherence_npmi_val:.4f}")
+        print(f"  Topic Diversity               : {self.topic_diversity_val:.4f}")
+        print(f"\n--- Construct-Guided Topics ---")
+        for tname, words_weights in self.topic_words.items():
+            print(f"\n  {tname}:")
+            for word, weight in words_weights[:12]:
+                print(f"    {word:20s} {weight:.6f}")
+        print(f"{sep}\n")
+        sys.stdout.flush()
+
 
 # ========================================================================
-# 5. BERTopic
+# 3. BERTopic  (transformer-based, semi-supervised)
 # ========================================================================
 
 class BERTopicModel:
@@ -290,7 +383,7 @@ class BERTopicModel:
         self.use_seeds = use_seeds
         self.model = None
         self.topic_mapping: Dict[int, str] = {}
-        self.topic_words: Dict[str, List[str]] = {}
+        self.topic_words: Dict[str, List[Tuple[str, float]]] = {}
 
     def fit(self, texts: List[str]):
         emb = SentenceTransformer("all-MiniLM-L6-v2")
@@ -310,11 +403,11 @@ class BERTopicModel:
         )
         self.model.fit_transform(texts)
         self._map_topics()
+        self._print_report()
         return self
 
     def _map_topics(self):
         info = self.model.get_topic_info()
-        cnames = list(CONSTRUCTS.keys())
         for _, row in info.iterrows():
             tid = row["Topic"]
             if tid == -1:
@@ -324,11 +417,11 @@ class BERTopicModel:
             if not tw:
                 self.topic_mapping[tid] = "Unclassified"
                 continue
-            words = [w for w, _ in tw[:15]]
+            words = [(w, float(s)) for w, s in tw[:20]]
             self.topic_words[f"BERTopic_{tid}"] = words
 
             best_name, best_ov = "Unclassified", 0
-            word_set = set(words)
+            word_set = {w for w, _ in words}
             for cn, ci in CONSTRUCTS.items():
                 kw_set = {k.lower() for k in ci["inclusion_keywords"]}
                 ov = len(word_set & kw_set)
@@ -352,115 +445,64 @@ class BERTopicModel:
             })
         return pd.DataFrame(rows)
 
-
-# ========================================================================
-# 6. ZERO-SHOT CLASSIFICATION
-# ========================================================================
-
-class ZeroShotClassifier:
-    """Zero-shot classification using facebook/bart-large-mnli."""
-
-    def __init__(self):
-        if not TRANSFORMERS_AVAILABLE:
-            raise ImportError("pip install transformers torch")
-        device = 0 if torch.cuda.is_available() else -1
-        self.classifier = hf_pipeline(
-            "zero-shot-classification",
-            model="facebook/bart-large-mnli",
-            device=device,
-        )
-        self.labels = CONSTRUCT_NAMES
-
-    def classify(
-        self, texts: List[str], brands: List[str] = None,
-        progress_callback=None,
-    ) -> pd.DataFrame:
-        rows = []
-        total = len(texts)
-        for i, text in enumerate(texts):
-            try:
-                res = self.classifier(
-                    text[:512], candidate_labels=self.labels, multi_label=False
-                )
-                rows.append({
-                    "text": text,
-                    "brand": brands[i] if brands else None,
-                    "assigned_topic": res["labels"][0],
-                    "confidence": float(res["scores"][0]),
-                    "method": "Zero-Shot",
-                    **{f"score_{l}": s for l, s in zip(res["labels"], res["scores"])},
-                })
-            except Exception:
-                rows.append({
-                    "text": text,
-                    "brand": brands[i] if brands else None,
-                    "assigned_topic": "Error",
-                    "confidence": 0.0,
-                    "method": "Zero-Shot",
-                })
-            if progress_callback and i % 10 == 0:
-                progress_callback("Zero-Shot", i / total)
-        return pd.DataFrame(rows)
+    def _print_report(self):
+        sep = "=" * 90
+        print(f"\n{sep}")
+        print("BERTopic — METRICS REPORT")
+        print(sep)
+        n_topics = len([t for t in self.topic_mapping if t != -1])
+        print(f"  Discovered topics : {n_topics}")
+        print(f"  Seed guidance     : {'Yes' if self.use_seeds else 'No'}")
+        print(f"\n--- Topic-Construct Mapping & Words ---")
+        for tname, words in self.topic_words.items():
+            construct = self.topic_mapping.get(int(tname.split("_")[-1]), "?")
+            print(f"\n  {tname} → {construct}")
+            for word, weight in words[:10]:
+                print(f"    {word:20s} {weight:.4f}")
+        print(f"{sep}\n")
+        sys.stdout.flush()
 
 
 # ========================================================================
-# UTILITY: run all algorithms and return combined results
+# UTILITY: run selected algorithms
 # ========================================================================
 
 def run_all_topic_models(
     texts: List[str],
     brands: List[str] = None,
     methods: List[str] = None,
+    lda_k_min: int = 4,
+    lda_k_max: int = 15,
     progress_callback=None,
-) -> Dict[str, pd.DataFrame]:
-    """Run selected (or all) topic-modeling methods and return dict of results.
+) -> Dict[str, object]:
+    """Run selected topic-modeling methods.
 
     Parameters
     ----------
-    methods : list of str, optional
-        Subset of ["Keyword", "LDA", "NMF", "Seeded LDA", "BERTopic", "Zero-Shot"].
-        Defaults to all available methods.
+    methods : list of str
+        Subset of ["LDA", "Seeded LDA", "BERTopic"].
+    lda_k_min, lda_k_max : int
+        Range of k values to test for unsupervised LDA.
     """
     available = {
-        "Keyword": True,
         "LDA": True,
-        "NMF": True,
         "Seeded LDA": True,
         "BERTopic": BERTOPIC_AVAILABLE,
-        "Zero-Shot": TRANSFORMERS_AVAILABLE,
     }
     if methods is None:
         methods = [m for m, ok in available.items() if ok]
 
-    results: Dict[str, pd.DataFrame] = {}
-
-    if "Keyword" in methods:
-        if progress_callback:
-            progress_callback("Keyword classification", 0.0)
-        kw = KeywordClassifier()
-        results["Keyword"] = kw.classify(texts, brands)
-        if progress_callback:
-            progress_callback("Keyword classification", 1.0)
+    results: Dict[str, object] = {}
 
     if "LDA" in methods:
         if progress_callback:
             progress_callback("LDA", 0.0)
-        lda = LDATopicModel(n_topics=len(CONSTRUCTS))
-        lda.fit(texts)
+        lda = LDATopicModel(k_min=lda_k_min, k_max=lda_k_max)
+        lda.fit(texts, progress_callback=progress_callback)
         results["LDA"] = lda.predict(texts, brands)
         results["LDA_model"] = lda
         if progress_callback:
             progress_callback("LDA", 1.0)
-
-    if "NMF" in methods:
-        if progress_callback:
-            progress_callback("NMF", 0.0)
-        nmf = NMFTopicModel(n_topics=len(CONSTRUCTS))
-        nmf.fit(texts)
-        results["NMF"] = nmf.predict(texts, brands)
-        results["NMF_model"] = nmf
-        if progress_callback:
-            progress_callback("NMF", 1.0)
 
     if "Seeded LDA" in methods:
         if progress_callback:
@@ -481,13 +523,5 @@ def run_all_topic_models(
         results["BERTopic_model"] = bt
         if progress_callback:
             progress_callback("BERTopic", 1.0)
-
-    if "Zero-Shot" in methods and TRANSFORMERS_AVAILABLE:
-        if progress_callback:
-            progress_callback("Zero-Shot", 0.0)
-        zs = ZeroShotClassifier()
-        results["Zero-Shot"] = zs.classify(texts, brands, progress_callback=progress_callback)
-        if progress_callback:
-            progress_callback("Zero-Shot", 1.0)
 
     return results
