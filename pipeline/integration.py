@@ -142,13 +142,18 @@ def generate_insights(merged_df: pd.DataFrame) -> List[str]:
     """Generate human-readable insights from the integrated analysis."""
     insights = []
 
-    # 1. Overall dominant emotion
+    # 1. Top 3 emotions
     if "emotion" in merged_df.columns:
         dom = merged_df["emotion"].value_counts()
+        top_n = min(3, len(dom))
+        parts = []
+        for rank in range(top_n):
+            emo = dom.index[rank]
+            cnt = dom.iloc[rank]
+            pct = cnt / len(merged_df) * 100
+            parts.append(f"**{emo}** ({cnt:,} comments, {pct:.1f}%)")
         insights.append(
-            f"The most prevalent emotion across all comments is "
-            f"**{dom.index[0]}** ({dom.iloc[0]} comments, "
-            f"{dom.iloc[0] / len(merged_df) * 100:.1f}%)."
+            f"Top {top_n} emotions across all comments: " + ", ".join(parts) + "."
         )
 
     # 2. Topic with most positive sentiment

@@ -36,15 +36,64 @@ def render_tab():
         "and how this varies across brands."
     )
 
-    if "primary_topic_df" not in st.session_state:
-        st.warning("Run topic modeling first (Topic Modeling tab) and select a primary method.")
+    if "topic_results" not in st.session_state:
+        st.warning("Run topic modeling first (Topic Modeling tab).")
         return
 
-    topic_df = st.session_state["primary_topic_df"]
+    all_results = st.session_state["topic_results"]
+    method_names = [k for k in all_results if not k.endswith("_model")]
+
+    if not method_names:
+        st.warning("No topic modeling results available. Run topic modeling first.")
+        return
+
+    # --- Method selector ---
+    st.subheader("Select Topic Method for Sentiment Integration")
+    selected_method = st.selectbox(
+        "Topic method to integrate with sentiment:",
+        method_names,
+        index=0,
+        key="sentiment_method_selector",
+    )
+    topic_df = all_results[selected_method]
     texts = st.session_state.get("topic_texts", topic_df["text"].tolist())
     brands = st.session_state.get("topic_brands", topic_df["brand"].tolist() if "brand" in topic_df else None)
 
-    st.info(f"Analysing {len(texts):,} comments from topic modeling results.")
+    st.info(f"Analysing **{len(texts):,}** comments using **{selected_method}** topic assignments.")
+
+    # --- Topic composition (what each topic consists of) ---
+    model_key = f"{selected_method}_model"
+    if model_key in all_results:
+        _model = all_results[model_key]
+        if hasattr(_model, "topic_words") and _model.topic_words:
+            with st.expander(f"Topic Composition — {selected_method} (top words per topic)", expanded=True):
+                n_topics = len(_model.topic_words)
+                n_cols = min(3, n_topics)
+                n_rows = (n_topics + n_cols - 1) // n_cols
+                fig_tw, axes_tw = plt.subplots(n_rows, n_cols, figsize=(6 * n_cols, 3.5 * n_rows))
+                if n_topics == 1:
+                    axes_tw = np.array([axes_tw])
+                axes_tw = np.atleast_2d(axes_tw)
+                colors_tw = sns.color_palette("Set2", n_topics)
+
+                for i, (tname, ww) in enumerate(_model.topic_words.items()):
+                    r, c = divmod(i, n_cols)
+                    ax = axes_tw[r, c]
+                    top10 = ww[:10]
+                    words = [w for w, _ in top10][::-1]
+                    weights = [v for _, v in top10][::-1]
+                    ax.barh(words, weights, color=colors_tw[i % len(colors_tw)])
+                    ax.set_title(tname, fontsize=10, fontweight="bold")
+                    ax.set_xlabel("Weight")
+
+                for j in range(n_topics, n_rows * n_cols):
+                    r, c = divmod(j, n_cols)
+                    axes_tw[r, c].set_visible(False)
+
+                plt.suptitle(f"{selected_method} — Top Words per Topic", fontsize=13, y=1.01)
+                plt.tight_layout()
+                st.pyplot(fig_tw)
+                plt.close()
 
     # --- Run sentiment ---
     use_bert = st.checkbox("Use BERT emotion model", value=TRANSFORMERS_AVAILABLE)
@@ -74,15 +123,30 @@ def render_tab():
     merged = st.session_state["merged_df"]
 
     # =================================================================
-    # SECTION 1: OVERALL EMOTION DISTRIBUTION
+    # SECTION 1: OVERALL EMOTION DISTRIBUTION — TOP 3 HIGHLIGHTED
     # =================================================================
     st.subheader("1. Overall Emotion Distribution")
 
     if "emotion" in merged.columns:
+        emotion_counts = merged["emotion"].value_counts()
+        total = len(merged)
+
+        # --- Top 3 Emotions as prominent metric cards ---
+        top_n = min(3, len(emotion_counts))
+        cols_top = st.columns(top_n)
+        medal = ["1st", "2nd", "3rd"]
+        for rank in range(top_n):
+            emo = emotion_counts.index[rank]
+            cnt = emotion_counts.iloc[rank]
+            pct = cnt / total * 100
+            cols_top[rank].metric(
+                f"{medal[rank]} — {emo.capitalize()}",
+                f"{pct:.1f}%",
+                f"{cnt:,} comments",
+            )
+
         fig, axes = plt.subplots(1, 2, figsize=(14, 5))
 
-        # Emotion counts
-        emotion_counts = merged["emotion"].value_counts()
         colors = sns.color_palette("husl", len(emotion_counts))
         emotion_counts.plot(kind="bar", ax=axes[0], color=colors)
         axes[0].set_title("Emotion Counts (BERT)")
@@ -123,10 +187,13 @@ def render_tab():
         st.pyplot(fig)
         plt.close()
 
-        # Dominant emotion per topic
-        st.markdown("**Dominant emotion per topic:**")
-        for topic, info in te["dominant_emotion_per_topic"].items():
-            st.write(f"- **{topic}**: {info['emotion']} ({info['pct']:.1f}%)")
+        # Top 3 emotions per topic
+        st.markdown("**Top 3 emotions per topic:**")
+        for topic in te["percentages"].index:
+            row = te["percentages"].loc[topic].sort_values(ascending=False)
+            top3 = row.head(3)
+            parts = [f"{emo} ({pct:.1f}%)" for emo, pct in top3.items()]
+            st.write(f"- **{topic}**: {', '.join(parts)}")
 
     # =================================================================
     # SECTION 3: VADER BY TOPIC
