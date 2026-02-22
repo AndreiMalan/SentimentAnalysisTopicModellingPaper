@@ -58,7 +58,7 @@ def render_tab():
         default=["LDA", "Seeded LDA"],
     )
 
-    col_cfg1, col_cfg2, col_cfg3 = st.columns(3)
+    col_cfg1, col_cfg2 = st.columns(2)
     sample_size = col_cfg1.slider(
         "Sample size",
         min_value=100,
@@ -66,11 +66,19 @@ def render_tab():
         value=min(len(texts), 2000),
         step=100,
     )
-    lda_k_min = col_cfg2.number_input("LDA k min", min_value=2, max_value=20, value=4)
-    lda_k_max = col_cfg3.number_input("LDA k max", min_value=3, max_value=25, value=15)
+    lda_k_min, lda_k_max = col_cfg2.slider(
+        "LDA k range",
+        min_value=2, max_value=25, value=(4, 15),
+        key="lda_k_range_slider",
+    )
 
     if st.button("Run Topic Modeling", type="primary"):
-        idx = np.random.RandomState(42).choice(len(texts), size=min(sample_size, len(texts)), replace=False)
+        # Read slider values BEFORE any rerun
+        _k_min = int(lda_k_min)
+        _k_max = int(lda_k_max)
+        _sample = int(sample_size)
+
+        idx = np.random.RandomState(42).choice(len(texts), size=min(_sample, len(texts)), replace=False)
         sample_texts = [texts[i] for i in idx]
         sample_brands = [brands[i] for i in idx]
 
@@ -85,8 +93,8 @@ def render_tab():
             all_results = run_all_topic_models(
                 sample_texts, sample_brands,
                 methods=selected,
-                lda_k_min=lda_k_min,
-                lda_k_max=lda_k_max,
+                lda_k_min=_k_min,
+                lda_k_max=_k_max,
                 progress_callback=_cb,
             )
 

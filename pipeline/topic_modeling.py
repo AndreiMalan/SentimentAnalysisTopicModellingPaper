@@ -271,13 +271,28 @@ class LDATopicModel:
 # ========================================================================
 
 class SeededLDA:
-    """LDA with seed-word boosting from the literature constructs."""
+    """LDA with seed-word initialisation from the literature constructs.
+
+    Unlike plain LDA, this model **initialises** the topic-word
+    distributions with high seed-word priors BEFORE fitting, then
+    refines via partial_fit.  This ensures construct keywords
+    dominate each topic instead of generic corpus words.
+    """
+
+    # Brand / product terms to filter from displayed top-words
+    _GENERIC_FILTER = {
+        "samsung", "xiaomi", "huawei", "apple", "iphone", "galaxy",
+        "redmi", "note", "ultra", "pro", "max", "plus", "lite",
+        "phone", "mobile", "device", "tab", "tablet", "watch",
+        "series", "model", "version", "company", "brand",
+    }
 
     def __init__(self, n_topics: int = 7, max_features: int = 2000,
-                 boost_factor: float = 5.0):
+                 boost_factor: float = 200.0, refine_iters: int = 15):
         self.n_topics = n_topics
         self.max_features = max_features
         self.boost_factor = boost_factor
+        self.refine_iters = refine_iters
         self.vectorizer = None
         self.model = None
         self.dtm = None
@@ -295,15 +310,19 @@ class SeededLDA:
         )
         self.dtm = self.vectorizer.fit_transform(texts)
         feat = self.vectorizer.get_feature_names_out()
+        n_features = len(feat)
         word2idx = {w: i for i, w in enumerate(feat)}
 
+        # 1. Quick initial fit to set up internal state
         self.model = LatentDirichletAllocation(
             n_components=self.n_topics, random_state=RANDOM_STATE,
-            max_iter=50, learning_method="batch", n_jobs=-1,
+            max_iter=5, learning_method="online", n_jobs=-1,
         )
         self.model.fit(self.dtm)
 
-        # Boost seed words
+        # 2. Seed the components BEFORE main training:
+        #    Set seed-word positions to a very high value so they
+        #    dominate each topic's word distribution.
         self.topic_names = list(CONSTRUCTS.keys())[:self.n_topics]
         for t_idx, cname in enumerate(self.topic_names):
             if t_idx >= self.n_topics:
@@ -313,16 +332,26 @@ class SeededLDA:
                 if kw_lower in word2idx:
                     self.model.components_[t_idx, word2idx[kw_lower]] *= self.boost_factor
 
+        # 3. Refine with partial_fit: the model updates from the
+        #    seed-initialised state so seeds stay prominent.
+        for _ in range(self.refine_iters):
+            self.model.partial_fit(self.dtm)
+
         self.model.components_ /= self.model.components_.sum(axis=1, keepdims=True)
 
-        # Topic words with weights
+        # 4. Extract topic words — filter out generic brand/product terms
         tw_dist = self.model.components_ / self.model.components_.sum(axis=1, keepdims=True)
         for t_idx in range(self.n_topics):
-            top_ids = tw_dist[t_idx].argsort()[-20:][::-1]
+            top_ids = tw_dist[t_idx].argsort()[-50:][::-1]  # get extra to survive filter
             name = self.topic_names[t_idx] if t_idx < len(self.topic_names) else f"Topic_{t_idx}"
-            self.topic_words[name] = [
-                (feat[i], float(tw_dist[t_idx, i])) for i in top_ids
-            ]
+            filtered = []
+            for idx in top_ids:
+                word = feat[idx]
+                if word not in self._GENERIC_FILTER:
+                    filtered.append((word, float(tw_dist[t_idx, idx])))
+                if len(filtered) >= 20:
+                    break
+            self.topic_words[name] = filtered
 
         # Metrics
         self.perplexity = self.model.perplexity(self.dtm)
@@ -393,15 +422,28 @@ class BERTopicModel:
                 info["inclusion_keywords"][:10]
                 for info in CONSTRUCTS.values()
             ]
+        # Lower min_topic_size to reduce outliers
         self.model = BERTopic(
             embedding_model=emb,
-            min_topic_size=max(10, len(texts) // 100),
+            min_topic_size=max(5, len(texts) // 200),
             nr_topics=self.n_topics,
             seed_topic_list=seed_list,
             calculate_probabilities=True,
             verbose=False,
         )
-        self.model.fit_transform(texts)
+        topics, probs = self.model.fit_transform(texts)
+
+        # Reassign outliers (-1) to their nearest topic
+        try:
+            new_topics = self.model.reduce_outliers(texts, topics, strategy="probabilities")
+            self.model.update_topics(texts, topics=new_topics)
+        except Exception:
+            try:
+                new_topics = self.model.reduce_outliers(texts, topics, strategy="distributions")
+                self.model.update_topics(texts, topics=new_topics)
+            except Exception:
+                pass  # keep original assignments if reduce_outliers fails
+
         self._map_topics()
         self._print_report()
         return self
