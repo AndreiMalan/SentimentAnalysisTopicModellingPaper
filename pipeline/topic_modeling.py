@@ -120,7 +120,7 @@ class LDATopicModel:
     topic diversity.  Selects the k with the best coherence score.
     """
 
-    def __init__(self, k_min=4, k_max=15, max_features=2000, n_top_words=20):
+    def __init__(self, k_min=4, k_max=15, max_features=5000, n_top_words=20):
         self.k_min = k_min
         self.k_max = k_max
         self.max_features = max_features
@@ -145,7 +145,7 @@ class LDATopicModel:
     def fit(self, texts: List[str], progress_callback=None):
         self.vectorizer = CountVectorizer(
             max_features=self.max_features, max_df=0.95, min_df=2,
-            stop_words="english",
+            stop_words="english", ngram_range=(1, 3),
         )
         self.dtm = self.vectorizer.fit_transform(texts)
 
@@ -287,7 +287,7 @@ class SeededLDA:
         "series", "model", "version", "company", "brand",
     }
 
-    def __init__(self, n_topics: int = 7, max_features: int = 2000,
+    def __init__(self, n_topics: int = 7, max_features: int = 5000,
                  boost_factor: float = 200.0, refine_iters: int = 15):
         self.n_topics = n_topics
         self.max_features = max_features
@@ -306,7 +306,7 @@ class SeededLDA:
     def fit(self, texts: List[str]):
         self.vectorizer = CountVectorizer(
             max_features=self.max_features, max_df=0.95, min_df=2,
-            stop_words="english",
+            stop_words="english", ngram_range=(1, 3),
         )
         self.dtm = self.vectorizer.fit_transform(texts)
         feat = self.vectorizer.get_feature_names_out()
