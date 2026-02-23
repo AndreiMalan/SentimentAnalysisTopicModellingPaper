@@ -120,7 +120,7 @@ class LDATopicModel:
     topic diversity.  Selects the k with the best coherence score.
     """
 
-    def __init__(self, k_min=4, k_max=15, max_features=5000, n_top_words=20):
+    def __init__(self, k_min=4, k_max=15, max_features=5000, n_top_words=50):
         self.k_min = k_min
         self.k_max = k_max
         self.max_features = max_features
@@ -342,14 +342,14 @@ class SeededLDA:
         # 4. Extract topic words — filter out generic brand/product terms
         tw_dist = self.model.components_ / self.model.components_.sum(axis=1, keepdims=True)
         for t_idx in range(self.n_topics):
-            top_ids = tw_dist[t_idx].argsort()[-50:][::-1]  # get extra to survive filter
+            top_ids = tw_dist[t_idx].argsort()[-100:][::-1]  # get extra to survive filter
             name = self.topic_names[t_idx] if t_idx < len(self.topic_names) else f"Topic_{t_idx}"
             filtered = []
             for idx in top_ids:
                 word = feat[idx]
                 if word not in self._GENERIC_FILTER:
                     filtered.append((word, float(tw_dist[t_idx, idx])))
-                if len(filtered) >= 20:
+                if len(filtered) >= 50:
                     break
             self.topic_words[name] = filtered
 
@@ -422,9 +422,14 @@ class BERTopicModel:
                 info["inclusion_keywords"][:10]
                 for info in CONSTRUCTS.values()
             ]
+        # Vectorizer with bigrams/trigrams for topic representation
+        ngram_vectorizer = CountVectorizer(
+            ngram_range=(1, 3), stop_words="english", min_df=2,
+        )
         # Lower min_topic_size to reduce outliers
         self.model = BERTopic(
             embedding_model=emb,
+            vectorizer_model=ngram_vectorizer,
             min_topic_size=max(5, len(texts) // 200),
             nr_topics=self.n_topics,
             seed_topic_list=seed_list,
@@ -459,7 +464,7 @@ class BERTopicModel:
             if not tw:
                 self.topic_mapping[tid] = "Unclassified"
                 continue
-            words = [(w, float(s)) for w, s in tw[:20]]
+            words = [(w, float(s)) for w, s in tw[:50]]
             self.topic_words[f"BERTopic_{tid}"] = words
 
             best_name, best_ov = "Unclassified", 0

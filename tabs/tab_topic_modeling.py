@@ -21,6 +21,30 @@ from pipeline.topic_modeling import (
 )
 
 
+def _show_ngram_table(topic_words, method_label):
+    """Display a table of bigrams and trigrams per topic, extracted from topic_words."""
+    rows = []
+    for tname, ww in topic_words.items():
+        bigrams = [(w, v) for w, v in ww if w.count(" ") == 1]
+        trigrams = [(w, v) for w, v in ww if w.count(" ") == 2]
+        top_bi = bigrams[:10]
+        top_tri = trigrams[:10]
+        n_show = max(len(top_bi), len(top_tri), 1)
+        for rank in range(n_show):
+            bi_str = f"{top_bi[rank][0]} ({top_bi[rank][1]:.4f})" if rank < len(top_bi) else ""
+            tri_str = f"{top_tri[rank][0]} ({top_tri[rank][1]:.4f})" if rank < len(top_tri) else ""
+            rows.append({
+                "Topic": tname if rank == 0 else "",
+                "Bigram": bi_str,
+                "Trigram": tri_str,
+            })
+    if rows:
+        df = pd.DataFrame(rows)
+        st.dataframe(df, use_container_width=True, hide_index=True)
+    else:
+        st.info(f"No bigrams/trigrams found for {method_label}.")
+
+
 def render_tab():
     st.header("Topic Modeling")
     st.markdown(
@@ -220,6 +244,10 @@ def render_tab():
         st.pyplot(fig_words)
         plt.close()
 
+        # ----- 1c-bis. Bigrams & Trigrams per Topic -----
+        st.markdown(f"#### 1c'. Bigrams & Trigrams per Discovered Topic (k = {lda_model.optimal_k})")
+        _show_ngram_table(lda_model.topic_words, "LDA")
+
         # ----- 1d. Topic Distribution -----
         st.markdown("#### 1d. Document Assignment")
         fig_dist, ax_dist = plt.subplots(figsize=(10, 5))
@@ -298,6 +326,10 @@ def render_tab():
                 words_str = ", ".join([f"{w} ({v:.4f})" for w, v in ww[:20]])
                 st.markdown(f"**{tname}**: {words_str}")
 
+        # Bigrams & Trigrams
+        st.markdown("#### Seeded LDA — Bigrams & Trigrams per Construct")
+        _show_ngram_table(slda_model.topic_words, "Seeded LDA")
+
     # ==================================================================
     # SECTION 3 — BERTopic  (transformer-based)
     # ==================================================================
@@ -334,6 +366,10 @@ def render_tab():
                 construct = bt_model.topic_mapping.get(int(tname.split("_")[-1]), "?")
                 words_str = ", ".join([f"{w} ({v:.4f})" for w, v in ww[:20]])
                 st.markdown(f"**{tname}** -> {construct}: {words_str}")
+
+        # Bigrams & Trigrams
+        st.markdown("#### BERTopic — Bigrams & Trigrams per Topic")
+        _show_ngram_table(bt_model.topic_words, "BERTopic")
 
     # ==================================================================
     # SECTION 4 — MULTI-METHOD COMPARISON
