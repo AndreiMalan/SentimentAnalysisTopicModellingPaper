@@ -79,9 +79,9 @@ def render_tab():
                 for i, (tname, ww) in enumerate(_model.topic_words.items()):
                     r, c = divmod(i, n_cols)
                     ax = axes_tw[r, c]
-                    top10 = ww[:10]
-                    words = [w for w, _ in top10][::-1]
-                    weights = [v for _, v in top10][::-1]
+                    top20 = ww[:20]
+                    words = [w for w, _ in top20][::-1]
+                    weights = [v for _, v in top20][::-1]
                     ax.barh(words, weights, color=colors_tw[i % len(colors_tw)])
                     ax.set_title(tname, fontsize=10, fontweight="bold")
                     ax.set_xlabel("Weight")

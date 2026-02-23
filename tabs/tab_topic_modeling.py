@@ -203,7 +203,7 @@ def render_tab():
         for i, (tname, ww) in enumerate(lda_model.topic_words.items()):
             r, c = divmod(i, n_cols)
             ax = axes_w[r, c]
-            top15 = ww[:15]
+            top15 = ww[:20]
             words = [w for w, _ in top15][::-1]
             weights = [v for _, v in top15][::-1]
             ax.barh(words, weights, color=colors[i % len(colors)])
@@ -295,7 +295,7 @@ def render_tab():
         # Topic words
         with st.expander("Seeded LDA — Top words per construct"):
             for tname, ww in slda_model.topic_words.items():
-                words_str = ", ".join([f"{w} ({v:.4f})" for w, v in ww[:12]])
+                words_str = ", ".join([f"{w} ({v:.4f})" for w, v in ww[:20]])
                 st.markdown(f"**{tname}**: {words_str}")
 
     # ==================================================================
@@ -332,7 +332,7 @@ def render_tab():
         with st.expander("BERTopic — Topic words"):
             for tname, ww in bt_model.topic_words.items():
                 construct = bt_model.topic_mapping.get(int(tname.split("_")[-1]), "?")
-                words_str = ", ".join([f"{w} ({v:.4f})" for w, v in ww[:12]])
+                words_str = ", ".join([f"{w} ({v:.4f})" for w, v in ww[:20]])
                 st.markdown(f"**{tname}** -> {construct}: {words_str}")
 
     # ==================================================================
