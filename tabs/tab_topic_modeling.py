@@ -92,7 +92,7 @@ def render_tab():
     )
     lda_k_min, lda_k_max = col_cfg2.slider(
         "LDA k range",
-        min_value=6, max_value=20, value=(6, 15),
+        min_value=4, max_value=20, value=(4, 15),
         key="lda_k_range_slider",
     )
 
