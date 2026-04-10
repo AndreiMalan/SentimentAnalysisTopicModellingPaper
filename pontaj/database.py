@@ -101,6 +101,15 @@ def get_user_by_id(user_id: int) -> dict | None:
         return dict(row) if row else None
 
 
+def has_any_employees() -> bool:
+    """True if at least one employee-role user exists (used for first-run detection)."""
+    with get_conn() as conn:
+        count = conn.execute(
+            "SELECT COUNT(*) FROM users WHERE role='employee'"
+        ).fetchone()[0]
+        return count > 0
+
+
 def get_all_employees() -> list[dict]:
     """Return all active employee-role users, ordered by name."""
     with get_conn() as conn:

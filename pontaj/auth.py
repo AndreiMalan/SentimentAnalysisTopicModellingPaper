@@ -12,7 +12,8 @@ from datetime import date
 
 import streamlit as st
 
-from .database import get_user_by_username, verify_password
+from .constants import DEFAULT_ADMIN_PASS, DEFAULT_ADMIN_USER
+from .database import get_user_by_username, has_any_employees, verify_password
 
 
 # ---------------------------------------------------------------------------
@@ -71,6 +72,20 @@ def render_login() -> None:
 
     _, col_center, _ = st.columns([1, 2, 1])
     with col_center:
+
+        # ── First-run setup notice ────────────────────────────────────────────
+        if not has_any_employees():
+            st.info(
+                "**Prima configurare — niciun angajat gasit**\n\n"
+                "Autentificati-va ca administrator pentru a crea conturi de angajati:\n\n"
+                f"- **Utilizator:** `{DEFAULT_ADMIN_USER}`\n"
+                f"- **Parola:** `{DEFAULT_ADMIN_PASS}`\n\n"
+                "Dupa autentificare mergeti la tab-ul **👥 Gestionare Angajati** "
+                "si adaugati angajatii. Schimbati parola de admin din bara laterala!",
+                icon="ℹ️",
+            )
+
+        # ── Login form ────────────────────────────────────────────────────────
         with st.form("login_form"):
             st.markdown("#### Autentificare")
             username = st.text_input("Utilizator", placeholder="username")

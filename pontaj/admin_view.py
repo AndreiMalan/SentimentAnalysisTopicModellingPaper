@@ -26,6 +26,7 @@ from .database import (
     get_entries_for_user_month,
     toggle_user_active,
     update_user_password,
+    verify_password,
 )
 
 
@@ -34,6 +35,27 @@ def render_admin_view(user: dict) -> None:
     with st.sidebar:
         st.markdown(f"### 🔧 {user['full_name']}")
         st.caption("Administrator")
+        st.divider()
+
+        # ── Change my password ────────────────────────────────────────────────
+        with st.expander("🔑 Schimba parola"):
+            with st.form("adm_change_pw_form", clear_on_submit=True):
+                current_pw = st.text_input("Parola curenta", type="password")
+                new_pw     = st.text_input("Parola noua", type="password")
+                confirm_pw = st.text_input("Confirma parola noua", type="password")
+                if st.form_submit_button("Salveaza parola", use_container_width=True):
+                    if not current_pw or not new_pw or not confirm_pw:
+                        st.error("Completeaza toate campurile.")
+                    elif not verify_password(current_pw, user["password_hash"]):
+                        st.error("Parola curenta este incorecta.")
+                    elif len(new_pw) < 6:
+                        st.error("Parola noua trebuie sa aiba cel putin 6 caractere.")
+                    elif new_pw != confirm_pw:
+                        st.error("Parolele noi nu coincid.")
+                    else:
+                        update_user_password(user["id"], new_pw)
+                        st.success("Parola a fost schimbata!")
+
         st.divider()
         if st.button("🚪 Deconectare", use_container_width=True):
             logout()
@@ -172,29 +194,37 @@ def _render_employee_calendar_tab() -> None:
 # ---------------------------------------------------------------------------
 
 def _render_manage_users_tab() -> None:
-    st.subheader("Angajati inregistrati")
+    st.subheader("Utilizatori inregistrati")
     all_users = get_all_users()
 
-    for u in all_users:
-        # Hide the seeded default admin from the management list
-        if u["username"] == DEFAULT_ADMIN_USER and u["role"] == "admin":
-            continue
-        col_name, col_role, col_status, col_toggle, col_del = st.columns([3, 2, 2, 2, 1])
-        with col_name:
-            st.write(f"**{u['full_name']}** (@{u['username']})")
-        with col_role:
-            st.write("🔧 Admin" if u["role"] == "admin" else "👤 Angajat")
-        with col_status:
-            st.write("🟢 Activ" if u["is_active"] else "🔴 Inactiv")
-        with col_toggle:
-            label = "Dezactiveaza" if u["is_active"] else "Activeaza"
-            if st.button(label, key=f"toggle_{u['id']}"):
-                toggle_user_active(u["id"])
-                st.rerun()
-        with col_del:
-            if st.button("🗑️", key=f"del_user_{u['id']}", help="Sterge utilizator"):
-                delete_user(u["id"])
-                st.rerun()
+    if not all_users:
+        st.info("Nu exista utilizatori.")
+    else:
+        for u in all_users:
+            col_name, col_role, col_status, col_toggle, col_del = st.columns([3, 2, 2, 2, 1])
+            with col_name:
+                st.write(f"**{u['full_name']}** (@{u['username']})")
+            with col_role:
+                st.write("🔧 Admin" if u["role"] == "admin" else "👤 Angajat")
+            with col_status:
+                st.write("🟢 Activ" if u["is_active"] else "🔴 Inactiv")
+            with col_toggle:
+                # Prevent deactivating the default admin
+                if u["username"] == DEFAULT_ADMIN_USER and u["role"] == "admin":
+                    st.caption("—")
+                else:
+                    label = "Dezactiveaza" if u["is_active"] else "Activeaza"
+                    if st.button(label, key=f"toggle_{u['id']}"):
+                        toggle_user_active(u["id"])
+                        st.rerun()
+            with col_del:
+                # Prevent deleting the default admin
+                if u["username"] == DEFAULT_ADMIN_USER and u["role"] == "admin":
+                    st.caption("—")
+                else:
+                    if st.button("🗑️", key=f"del_user_{u['id']}", help="Sterge utilizator"):
+                        delete_user(u["id"])
+                        st.rerun()
 
     st.divider()
     col_add, col_pw = st.columns(2)
@@ -221,14 +251,12 @@ def _render_manage_users_tab() -> None:
                     st.error(f"Utilizatorul '{new_username}' exista deja.")
 
     with col_pw:
-        st.subheader("🔑 Reseteaza parola")
-        manageable = [
-            u for u in all_users
-            if not (u["username"] == DEFAULT_ADMIN_USER and u["role"] == "admin")
-        ]
-        if manageable:
+        st.subheader("🔑 Reseteaza parola (admin)")
+        st.caption("Folositi aceasta sectiune doar pentru a reseta parola altui utilizator. "
+                   "Pentru propria parola folositi bara laterala.")
+        if all_users:
             with st.form("reset_pw_form", clear_on_submit=True):
-                pw_options = {f"{u['full_name']} (@{u['username']})": u["id"] for u in manageable}
+                pw_options = {f"{u['full_name']} (@{u['username']})": u["id"] for u in all_users}
                 sel_label = st.selectbox("Selecteaza utilizator", list(pw_options.keys()))
                 new_pw = st.text_input("Parola noua", type="password")
                 if st.form_submit_button("Reseteaza", type="primary"):
