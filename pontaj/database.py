@@ -174,14 +174,15 @@ def delete_user(user_id: int) -> None:
 # ---------------------------------------------------------------------------
 
 def _compute_hours(start_str: str | None, end_str: str | None) -> float:
-    """Return the decimal hours between two 'HH:MM' strings, or 0.0."""
+    """Return decimal hours between two 'HH:MM' strings, rounded to nearest 15 min."""
     if not start_str or not end_str:
         return 0.0
     try:
         sh, sm = map(int, start_str.split(":"))
         eh, em = map(int, end_str.split(":"))
         diff = (eh * 60 + em) - (sh * 60 + sm)
-        return max(0.0, diff / 60.0)
+        diff_rounded = round(diff / 15) * 15  # snap to nearest 15-min slot
+        return max(0.0, diff_rounded / 60.0)
     except Exception:
         return 0.0
 

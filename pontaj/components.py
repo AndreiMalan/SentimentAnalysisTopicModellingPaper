@@ -28,10 +28,11 @@ from .database import delete_entry, upsert_time_entry
 # ---------------------------------------------------------------------------
 
 def _fmt_hours(decimal_hours: float) -> str:
-    """Convert decimal hours to a readable string.
-    Examples: 8.0 → '8h', 6.75 → '6h 45min', 14.8 → '14h 48min'
+    """Convert decimal hours to a readable string, snapped to nearest 15 min.
+    Examples: 8.0 → '8h', 6.75 → '6h 45min', 6.8 → '6h 45min'
     """
     total_minutes = round(decimal_hours * 60)
+    total_minutes = round(total_minutes / 15) * 15  # snap to nearest 15 min
     h = total_minutes // 60
     m = total_minutes % 60
     if m == 0:
