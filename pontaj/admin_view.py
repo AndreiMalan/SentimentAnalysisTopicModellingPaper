@@ -23,6 +23,7 @@ from .database import (
     get_all_employees,
     get_all_entries_month,
     get_all_users,
+    get_active_months_for_user,
     get_entries_for_user_month,
     toggle_user_active,
     update_user_password,
@@ -187,6 +188,30 @@ def _render_employee_calendar_tab() -> None:
         clickable=False,
         key_prefix=f"admin_cal_{sel_emp['id']}",
     )
+
+    # ── Multi-month notice ────────────────────────────────────────────────────
+    active_months = get_active_months_for_user(sel_emp["id"])
+    other_months = [
+        (y, m) for y, m in active_months
+        if not (y == adm_year and m == adm_month)
+    ]
+    if other_months:
+        other_labels = ", ".join(f"**{RO_MONTHS[m]} {y}**" for y, m in other_months)
+        st.info(
+            f"Angajatul **{sel_name}** are inregistrari si in alte luni: {other_labels}. "
+            "Apasati pe o luna pentru a o vizualiza:"
+        )
+        jump_cols = st.columns(min(len(other_months), 6))
+        for col, (y, m) in zip(jump_cols, other_months):
+            with col:
+                if st.button(
+                    f"{RO_MONTHS[m]} {y}",
+                    key=f"jump_{sel_emp['id']}_{y}_{m}",
+                    use_container_width=True,
+                ):
+                    st.session_state["adm_year"] = y
+                    st.session_state["adm_month"] = m
+                    st.rerun()
 
 
 # ---------------------------------------------------------------------------

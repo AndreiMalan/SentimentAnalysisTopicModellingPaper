@@ -147,7 +147,7 @@ def render_calendar_grid(
                     else "2px solid #aaa" if is_today
                     else "1px solid #ddd"
                 )
-                text_color = "#fff" if etype and not is_weekend else "#333"
+                text_color = "#fff" if etype else "#333"
 
                 if etype == "lucrat" and entry:
                     label = (
@@ -160,7 +160,7 @@ def render_calendar_grid(
                 else:
                     label = str(d)
 
-                if clickable and not is_weekend:
+                if clickable:
                     st.markdown("<div class='cal-day'>", unsafe_allow_html=True)
                     clicked = st.button(
                         label,

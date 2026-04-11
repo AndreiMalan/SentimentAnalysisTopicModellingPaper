@@ -259,6 +259,20 @@ def get_all_entries_month(year: int, month: int) -> list[dict]:
         return [dict(r) for r in rows]
 
 
+def get_active_months_for_user(user_id: int) -> list[tuple[int, int]]:
+    """Return (year, month) tuples where this user has at least one entry, newest first."""
+    with get_conn() as conn:
+        rows = conn.execute(
+            """SELECT DISTINCT
+                   CAST(substr(date, 1, 4) AS INTEGER) AS year,
+                   CAST(substr(date, 6, 2) AS INTEGER) AS month
+               FROM time_entries WHERE user_id = ?
+               ORDER BY year DESC, month DESC""",
+            (user_id,),
+        ).fetchall()
+        return [(r["year"], r["month"]) for r in rows]
+
+
 # ---------------------------------------------------------------------------
 # Statistics
 # ---------------------------------------------------------------------------
