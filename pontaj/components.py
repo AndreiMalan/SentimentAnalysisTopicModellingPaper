@@ -24,6 +24,22 @@ from .database import delete_entry, upsert_time_entry
 
 
 # ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+def _fmt_hours(decimal_hours: float) -> str:
+    """Convert decimal hours to a readable string.
+    Examples: 8.0 → '8h', 6.75 → '6h 45min', 14.8 → '14h 48min'
+    """
+    total_minutes = round(decimal_hours * 60)
+    h = total_minutes // 60
+    m = total_minutes % 60
+    if m == 0:
+        return f"{h}h"
+    return f"{h}h {m}min"
+
+
+# ---------------------------------------------------------------------------
 # Month navigator
 # ---------------------------------------------------------------------------
 
@@ -153,7 +169,7 @@ def render_calendar_grid(
                     label = (
                         f"{d}\n"
                         f"{entry.get('start_time','?')}-{entry.get('end_time','?')}\n"
-                        f"{entry.get('hours_worked', 0):.1f}h"
+                        f"{_fmt_hours(entry.get('hours_worked', 0))}"
                     )
                 elif etype:
                     label = f"{d}\n{ENTRY_EMOJIS.get(etype,'')}\n{ENTRY_TYPES[etype]}"
@@ -278,7 +294,7 @@ def render_summary_cards(stats: dict) -> None:
     """Render six st.metric cards from a compute_monthly_stats() result."""
     cols = st.columns(6)
     cards = [
-        ("🕐 Ore lucrate",  f"{stats['total_hours']:.1f}h"),
+        ("🕐 Ore lucrate",  _fmt_hours(stats['total_hours'])),
         ("✅ Zile lucrate", stats["days_worked"]),
         ("🏖️ Liber",        stats["liber"]),
         ("🌴 Concediu",     stats["concediu"]),
