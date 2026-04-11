@@ -53,6 +53,17 @@ def main() -> None:
     else:
         render_employee_view(user)
 
+    st.markdown(
+        """
+        <div style='text-align:center; color:#bbb; font-size:12px;
+                    padding:20px 0 8px 0; margin-top:48px;
+                    border-top:1px solid #efefef;'>
+            &copy; 2026 Andrei Malan
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
 
 if __name__ == "__main__":
     main()
